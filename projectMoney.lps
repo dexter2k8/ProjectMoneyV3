@@ -10,7 +10,7 @@
         <IsPartOfProject Value="True"/>
         <EditorIndex Value="-1"/>
         <CursorPos Y="27"/>
-        <UsageCount Value="47"/>
+        <UsageCount Value="48"/>
       </Unit>
       <Unit>
         <Filename Value="unitmoney.pas"/>
@@ -19,14 +19,21 @@
         <HasResources Value="True"/>
         <ResourceBaseClass Value="Form"/>
         <UnitName Value="unitMoney"/>
-        <IsVisibleTab Value="True"/>
-        <CursorPos X="23" Y="16"/>
-        <UsageCount Value="47"/>
+        <CursorPos X="37" Y="13"/>
+        <UsageCount Value="48"/>
         <Loaded Value="True"/>
         <LoadedDesigner Value="True"/>
       </Unit>
+      <Unit>
+        <Filename Value="unitDatabase.pas"/>
+        <IsPartOfProject Value="True"/>
+        <IsVisibleTab Value="True"/>
+        <EditorIndex Value="1"/>
+        <UsageCount Value="20"/>
+        <Loaded Value="True"/>
+      </Unit>
     </Units>
-    <JumpHistory HistoryIndex="2">
+    <JumpHistory HistoryIndex="3">
       <Position>
         <Filename Value="unitmoney.pas"/>
       </Position>
@@ -37,6 +44,10 @@
       <Position>
         <Filename Value="unitmoney.pas"/>
         <Caret Line="16" Column="23"/>
+      </Position>
+      <Position>
+        <Filename Value="unitmoney.pas"/>
+        <Caret Line="13" Column="37" TopLine="13"/>
       </Position>
     </JumpHistory>
     <RunParams>

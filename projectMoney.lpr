@@ -10,7 +10,7 @@ uses
   athreads,
   {$ENDIF}
   Interfaces, // this includes the LCL widgetset
-  Forms, unitMoney
+  Forms, unitMoney, unitDatabase
   { you can add units after this };
 
 {$R *.res}
@@ -22,6 +22,7 @@ begin
   Application.MainFormOnTaskbar:=True;
   {$POP}
   Application.Initialize;
+  EnsureDatabase;
   Application.CreateForm(TFormMoney, FormMoney);
   Application.Run;
 end.

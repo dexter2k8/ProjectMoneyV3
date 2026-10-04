@@ -42,6 +42,11 @@
         <ResourceBaseClass Value="Form"/>
         <UnitName Value="unitMoney"/>
       </Unit>
+      <Unit>
+        <Filename Value="unitDatabase.pas"/>
+        <IsPartOfProject Value="True"/>
+        <UnitName Value="unitDatabase"/>
+      </Unit>
     </Units>
   </ProjectOptions>
   <CompilerOptions>
