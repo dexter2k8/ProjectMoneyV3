@@ -38,6 +38,7 @@
         <Filename Value="unitmoney.pas"/>
         <IsPartOfProject Value="True"/>
         <ComponentName Value="FormMoney"/>
+        <HasResources Value="True"/>
         <ResourceBaseClass Value="Form"/>
         <UnitName Value="unitMoney"/>
       </Unit>

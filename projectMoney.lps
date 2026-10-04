@@ -8,31 +8,35 @@
       <Unit>
         <Filename Value="projectMoney.lpr"/>
         <IsPartOfProject Value="True"/>
-        <IsVisibleTab Value="True"/>
-        <EditorIndex Value="1"/>
-        <CursorPos X="54" Y="10"/>
-        <UsageCount Value="20"/>
-        <Loaded Value="True"/>
+        <EditorIndex Value="-1"/>
+        <CursorPos Y="27"/>
+        <UsageCount Value="44"/>
       </Unit>
       <Unit>
         <Filename Value="unitmoney.pas"/>
         <IsPartOfProject Value="True"/>
         <ComponentName Value="FormMoney"/>
+        <HasResources Value="True"/>
         <ResourceBaseClass Value="Form"/>
         <UnitName Value="unitMoney"/>
-        <CursorPos X="54" Y="8"/>
-        <UsageCount Value="20"/>
+        <IsVisibleTab Value="True"/>
+        <CursorPos X="23" Y="16"/>
+        <UsageCount Value="44"/>
         <Loaded Value="True"/>
         <LoadedDesigner Value="True"/>
       </Unit>
     </Units>
-    <JumpHistory HistoryIndex="1">
+    <JumpHistory HistoryIndex="2">
       <Position>
         <Filename Value="unitmoney.pas"/>
       </Position>
       <Position>
         <Filename Value="unitmoney.pas"/>
         <Caret Line="8" Column="54"/>
+      </Position>
+      <Position>
+        <Filename Value="unitmoney.pas"/>
+        <Caret Line="16" Column="23"/>
       </Position>
     </JumpHistory>
     <RunParams>

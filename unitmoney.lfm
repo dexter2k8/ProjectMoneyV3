@@ -8,7 +8,7 @@ object FormMoney: TFormMoney
   ClientWidth = 860
   Menu = MainMenu
   LCLVersion = '4.8.0.0'
-  object PanelFooter: TPanel
+  object pnFooter: TPanel
     Left = 0
     Height = 50
     Top = 522
@@ -18,86 +18,337 @@ object FormMoney: TFormMoney
     ClientWidth = 860
     TabOrder = 0
     object lblSaldo: TLabel
-      Left = 692
+      Left = 717
       Height = 48
       Top = 1
-      Width = 47
+      Width = 38
       Align = alRight
       Alignment = taRightJustify
       Caption = 'Saldo:'
       Font.CharSet = ANSI_CHARSET
-      Font.Height = -16
+      Font.Height = -13
+      Font.Pitch = fpVariable
+      Font.Quality = fqDraft
       Font.Style = [fsBold]
       Layout = tlCenter
       ParentFont = False
     end
     object txtSaldo: TLabel
-      Left = 749
+      Left = 765
       Height = 48
       Top = 1
-      Width = 110
+      Width = 94
       Align = alRight
       AutoSize = False
       BorderSpacing.Left = 10
-      Caption = '1.000.000,00 C'
       Font.CharSet = ANSI_CHARSET
-      Font.Height = -16
+      Font.Height = -13
+      Font.Pitch = fpVariable
+      Font.Quality = fqDraft
+      Font.Style = [fsBold]
+      Layout = tlCenter
+      ParentFont = False
+    end
+    object toggleNavTrans: TToggleBox
+      Left = 13
+      Height = 25
+      Top = 12
+      Width = 91
+      Caption = 'Show Controls'
+      TabOrder = 0
+    end
+    object DBNavigator1: TDBNavigator
+      Left = 112
+      Height = 25
+      Top = 12
+      Width = 241
+      BevelOuter = bvNone
+      ChildSizing.EnlargeHorizontal = crsScaleChilds
+      ChildSizing.EnlargeVertical = crsScaleChilds
+      ChildSizing.ShrinkHorizontal = crsScaleChilds
+      ChildSizing.ShrinkVertical = crsScaleChilds
+      ChildSizing.Layout = cclLeftToRightThenTopToBottom
+      ChildSizing.ControlsPerLine = 100
+      ClientHeight = 25
+      ClientWidth = 241
+      Options = []
+      TabOrder = 1
+    end
+  end
+  object pnHeader: TPanel
+    Left = 0
+    Height = 50
+    Top = 0
+    Width = 860
+    Align = alTop
+    ClientHeight = 50
+    ClientWidth = 860
+    TabOrder = 1
+    object cbYear: TComboBox
+      Left = 747
+      Height = 23
+      Top = 13
+      Width = 100
+      Align = alRight
+      BorderSpacing.Around = 12
+      ItemHeight = 15
+      Style = csDropDownList
+      TabOrder = 0
+    end
+    object cbAccount: TComboBox
+      Left = 13
+      Height = 23
+      Top = 13
+      Width = 212
+      Align = alLeft
+      BorderSpacing.Around = 12
+      ItemHeight = 15
+      Style = csDropDownList
+      TabOrder = 1
+    end
+    object lblTitle: TLabel
+      Left = 237
+      Height = 48
+      Top = 1
+      Width = 498
+      Align = alClient
+      Alignment = taCenter
+      Caption = 'Extratos Bancários'
+      Font.CharSet = ANSI_CHARSET
+      Font.Height = -19
+      Font.Pitch = fpVariable
+      Font.Quality = fqDraft
       Font.Style = [fsBold]
       Layout = tlCenter
       ParentFont = False
     end
   end
+  object PageControl1: TPageControl
+    Left = 0
+    Height = 472
+    Top = 50
+    Width = 860
+    ActivePage = tbJan
+    Align = alClient
+    TabIndex = 0
+    TabOrder = 2
+    object tbJan: TTabSheet
+      Caption = 'JAN'
+    end
+    object tbFev: TTabSheet
+      Caption = 'FEV'
+    end
+    object tbMar: TTabSheet
+      Caption = 'MAR'
+    end
+    object tbAbr: TTabSheet
+      Caption = 'ABR'
+    end
+    object tbMai: TTabSheet
+      Caption = 'MAI'
+    end
+    object tbJun: TTabSheet
+      Caption = 'JUN'
+    end
+    object tbJul: TTabSheet
+      Caption = 'JUL'
+    end
+    object tbAgo: TTabSheet
+      Caption = 'AGO'
+    end
+    object tbSet: TTabSheet
+      Caption = 'SET'
+    end
+    object tbOut: TTabSheet
+      Caption = 'OUT'
+    end
+    object tbNov: TTabSheet
+      Caption = 'NOV'
+    end
+    object tbDez: TTabSheet
+      Caption = 'DEZ'
+    end
+    object tbBancos: TTabSheet
+      Caption = 'Bancos'
+      ClientHeight = 444
+      ClientWidth = 852
+      object gridBancos: TDBGrid
+        Left = 200
+        Height = 394
+        Top = 0
+        Width = 452
+        Align = alClient
+        BorderSpacing.Left = 200
+        BorderSpacing.Right = 200
+        Color = clWindow
+        Columns = <>
+        TabOrder = 0
+      end
+      object pnBancosControl: TPanel
+        Left = 0
+        Height = 50
+        Top = 394
+        Width = 852
+        Align = alBottom
+        ClientHeight = 50
+        ClientWidth = 852
+        TabOrder = 1
+        object DBNavBancos: TDBNavigator
+          Left = 214
+          Height = 48
+          Top = 0
+          Width = 425
+          Anchors = [akTop, akBottom]
+          BevelOuter = bvNone
+          ChildSizing.EnlargeHorizontal = crsScaleChilds
+          ChildSizing.EnlargeVertical = crsScaleChilds
+          ChildSizing.ShrinkHorizontal = crsScaleChilds
+          ChildSizing.ShrinkVertical = crsScaleChilds
+          ChildSizing.Layout = cclLeftToRightThenTopToBottom
+          ChildSizing.ControlsPerLine = 100
+          ClientHeight = 48
+          ClientWidth = 425
+          Options = []
+          TabOrder = 0
+        end
+      end
+    end
+    object tbSaldos: TTabSheet
+      Caption = 'Saldos'
+      ClientHeight = 444
+      ClientWidth = 852
+      object gridSaldos: TDBGrid
+        Left = 0
+        Height = 394
+        Top = 0
+        Width = 852
+        Align = alClient
+        Color = clWindow
+        Columns = <>
+        TabOrder = 0
+      end
+      object pnSaldosControl: TPanel
+        Left = 0
+        Height = 50
+        Top = 394
+        Width = 852
+        Align = alBottom
+        ClientHeight = 50
+        ClientWidth = 852
+        TabOrder = 1
+        object DBNavSaldos: TDBNavigator
+          Left = 214
+          Height = 48
+          Top = 0
+          Width = 425
+          Anchors = [akTop, akBottom]
+          BevelOuter = bvNone
+          ChildSizing.EnlargeHorizontal = crsScaleChilds
+          ChildSizing.EnlargeVertical = crsScaleChilds
+          ChildSizing.ShrinkHorizontal = crsScaleChilds
+          ChildSizing.ShrinkVertical = crsScaleChilds
+          ChildSizing.Layout = cclLeftToRightThenTopToBottom
+          ChildSizing.ControlsPerLine = 100
+          ClientHeight = 48
+          ClientWidth = 425
+          Options = []
+          TabOrder = 0
+        end
+      end
+    end
+  end
+  object tsSaldo: TStaticText
+    Left = 760
+    Height = 17
+    Top = 53
+    Width = 94
+    Anchors = [akTop, akRight]
+    Font.CharSet = ANSI_CHARSET
+    Font.Height = -13
+    Font.Pitch = fpVariable
+    Font.Quality = fqDraft
+    Font.Style = [fsBold]
+    ParentFont = False
+    TabOrder = 3
+  end
+  object tsAnterior: TStaticText
+    Left = 696
+    Height = 18
+    Top = 53
+    Width = 55
+    Anchors = [akTop, akRight]
+    AutoSize = True
+    Caption = 'Anterior:'
+    Font.CharSet = ANSI_CHARSET
+    Font.Height = -13
+    Font.Pitch = fpVariable
+    Font.Quality = fqDraft
+    Font.Style = [fsBold]
+    ParentFont = False
+    TabOrder = 4
+  end
+  object gridTrans: TDBGrid
+    Left = 64
+    Height = 416
+    Top = 88
+    Width = 728
+    BorderSpacing.Top = 24
+    Color = clWindow
+    Columns = <>
+    TabOrder = 5
+    Visible = False
+  end
   object MainMenu: TMainMenu
     Left = 24
-    Top = 112
-    object MenuItemArquivo: TMenuItem
+    Top = 96
+    object mmArquivo: TMenuItem
       Caption = 'Arquivo'
-      object MenuItemNew: TMenuItem
+      object miNew: TMenuItem
         Caption = 'Novo Database'
       end
-      object MenuItemOpen: TMenuItem
+      object miOpen: TMenuItem
         Caption = 'Abrir Database'
       end
-      object MenuItemClose: TMenuItem
+      object miClose: TMenuItem
         Caption = 'Fechar Database'
       end
-      object MenuItemList: TMenuItem
+      object miList: TMenuItem
         Caption = 'Lista de Bancos'
       end
       object Separator2: TMenuItem
         Caption = '-'
       end
-      object MenuItemExit: TMenuItem
+      object miExit: TMenuItem
         Caption = 'Sair'
       end
     end
-    object MenuItemTransactions: TMenuItem
+    object mmTransactions: TMenuItem
       Caption = 'Transações'
-      object MenuItemImport: TMenuItem
+      object miImport: TMenuItem
         Caption = 'Importar OFC/OFX'
       end
       object Separator1: TMenuItem
         Caption = '-'
       end
-      object MenuItemExpTrans: TMenuItem
+      object miExpTrans: TMenuItem
         Caption = 'Exportar Transações (CSV)'
       end
-      object MenuItemExpSal: TMenuItem
+      object miExpSal: TMenuItem
         Caption = 'Exportar Saldos (CSV)'
       end
       object Separator3: TMenuItem
         Caption = '-'
       end
-      object MenuItemImpTrans: TMenuItem
+      object miImpTrans: TMenuItem
         Caption = 'Importar Transações (CSV)'
       end
-      object MenuItemImpSal: TMenuItem
+      object miImpSal: TMenuItem
         Caption = 'Importar Saldos (CSV)'
       end
     end
-    object MenuItemHelp: TMenuItem
+    object mmHelp: TMenuItem
       Caption = 'Ajuda'
-      object MenuItemAbout: TMenuItem
+      object miAbout: TMenuItem
         Caption = 'Sobre'
       end
     end
