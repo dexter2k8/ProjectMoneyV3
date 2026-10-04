@@ -49,15 +49,16 @@ object FormMoney: TFormMoney
       Layout = tlCenter
       ParentFont = False
     end
-    object toggleNavTrans: TToggleBox
+    object toggleShowControls: TToggleBox
       Left = 13
       Height = 25
       Top = 12
       Width = 91
       Caption = 'Show Controls'
+      OnClick = toggleShowControlsClick
       TabOrder = 0
     end
-    object DBNavigator1: TDBNavigator
+    object DBNavTrans: TDBNavigator
       Left = 112
       Height = 25
       Top = 12
@@ -73,6 +74,7 @@ object FormMoney: TFormMoney
       ClientWidth = 241
       Options = []
       TabOrder = 1
+      Visible = False
     end
   end
   object pnHeader: TPanel
@@ -128,9 +130,9 @@ object FormMoney: TFormMoney
     Height = 472
     Top = 50
     Width = 860
-    ActivePage = tbSaldos
+    ActivePage = tbJan
     Align = alClient
-    TabIndex = 13
+    TabIndex = 0
     TabOrder = 2
     object tbJan: TTabSheet
       Caption = 'JAN'
@@ -288,10 +290,10 @@ object FormMoney: TFormMoney
     TabOrder = 4
   end
   object gridTrans: TDBGrid
-    Left = 40
-    Height = 264
-    Top = 160
-    Width = 246
+    Left = 64
+    Height = 416
+    Top = 88
+    Width = 728
     BorderSpacing.Top = 24
     Color = clWindow
     Columns = <>

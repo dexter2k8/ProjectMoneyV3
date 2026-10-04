@@ -49,15 +49,16 @@ object FormMoney: TFormMoney
       Layout = tlCenter
       ParentFont = False
     end
-    object toggleNavTrans: TToggleBox
+    object toggleShowControls: TToggleBox
       Left = 13
       Height = 25
       Top = 12
       Width = 91
       Caption = 'Show Controls'
+      OnClick = toggleShowControlsClick
       TabOrder = 0
     end
-    object DBNavigator1: TDBNavigator
+    object DBNavTrans: TDBNavigator
       Left = 112
       Height = 25
       Top = 12
@@ -73,6 +74,7 @@ object FormMoney: TFormMoney
       ClientWidth = 241
       Options = []
       TabOrder = 1
+      Visible = False
     end
   end
   object pnHeader: TPanel

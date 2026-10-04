@@ -16,7 +16,7 @@ type
     cbYear: TComboBox;
     cbAccount: TComboBox;
     DBNavBancos: TDBNavigator;
-    DBNavigator1: TDBNavigator;
+    DBNavTrans: TDBNavigator;
     DBNavSaldos: TDBNavigator;
     gridSaldos: TDBGrid;
     gridTrans: TDBGrid;
@@ -46,7 +46,7 @@ type
     Separator1: TMenuItem;
     Separator2: TMenuItem;
     Separator3: TMenuItem;
-    toggleNavTrans: TToggleBox;
+    toggleShowControls: TToggleBox;
     tsSaldo: TStaticText;
     tbSaldos: TTabSheet;
     tbBancos: TTabSheet;
@@ -64,6 +64,7 @@ type
     tbJan: TTabSheet;
     tsAnterior: TStaticText;
     txtSaldo: TLabel;
+    procedure toggleShowControlsClick(Sender: TObject);
   private
 
   public
@@ -76,6 +77,13 @@ var
 implementation
 
 {$R *.lfm}
+
+{ TFormMoney }
+
+procedure TFormMoney.toggleShowControlsClick(Sender: TObject);
+begin
+  DBNavTrans.Visible := toggleShowControls.Checked;
+end;
 
 end.
 
