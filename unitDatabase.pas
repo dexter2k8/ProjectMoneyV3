@@ -21,10 +21,10 @@ uses
 const
   SqlCreateBanks =
     'CREATE TABLE "banks" (' + LineEnding +
-    #9'"id"'#9'INTEGER NOT NULL,' + LineEnding +
+    #9'"id"'#9'TEXT NOT NULL,' + LineEnding +
     #9'"name"'#9'TEXT NOT NULL,' + LineEnding +
     #9'"alias"'#9'TEXT NOT NULL,' + LineEnding +
-    #9'PRIMARY KEY("id" AUTOINCREMENT)' + LineEnding +
+    #9'PRIMARY KEY("id")' + LineEnding +
     ');';
 
 function DatabasePath: string;
