@@ -5,8 +5,8 @@ unit unitMoney;
 interface
 
 uses
-  Classes, SysUtils, Forms, Controls, Graphics, Dialogs, ComCtrls, ExtCtrls,
-  StdCtrls, Menus, DBGrids, DBCtrls;
+  Classes, SysUtils, SQLite3Conn, SQLDB, Forms, Controls, Graphics, Dialogs,
+  ComCtrls, ExtCtrls, StdCtrls, Menus, DB, DBGrids, DBCtrls;
 
 type
 
@@ -46,6 +46,10 @@ type
     Separator1: TMenuItem;
     Separator2: TMenuItem;
     Separator3: TMenuItem;
+    SQLite3ConnBancos: TSQLite3Connection;
+    SQLTransactionBancos: TSQLTransaction;
+    SQLQueryBanks: TSQLQuery;
+    DataSourceBancos: TDataSource;
     toggleShowControls: TToggleBox;
     tsSaldo: TStaticText;
     tbSaldos: TTabSheet;
@@ -64,6 +68,7 @@ type
     tbJan: TTabSheet;
     tsAnterior: TStaticText;
     txtSaldo: TLabel;
+    procedure FormCreate(Sender: TObject);
     procedure toggleShowControlsClick(Sender: TObject);
   private
 
@@ -76,9 +81,28 @@ var
 
 implementation
 
+uses
+  unitDatabase;
+
 {$R *.lfm}
 
 { TFormMoney }
+
+procedure TFormMoney.FormCreate(Sender: TObject);
+begin
+  try
+    // O caminho do designer é absoluto e só vale na sua máquina: aqui o
+    // arquivo é sempre o banks.db que está ao lado do executável.
+    SQLite3ConnBancos.DatabaseName := DatabasePath;
+    // Abrir a query dispara Prepare -> MaybeConnect + MaybeStartTransaction
+    // (sqldb.pp:1295-1297), então não é preciso ligar a transação na mão.
+    SQLQueryBanks.Open;
+  except
+    on E: Exception do
+      MessageDlg('Não foi possível carregar os dados de "' + DatabaseFileName +
+        '".' + LineEnding + E.Message, mtError, [mbOK], 0);
+  end;
+end;
 
 procedure TFormMoney.toggleShowControlsClick(Sender: TObject);
 begin

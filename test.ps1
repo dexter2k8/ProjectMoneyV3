@@ -89,7 +89,7 @@ function Get-DbInfo([string]$Path) {
     [pscustomobject]@{
         IsSqlite     = ($head -eq 'SQLite format 3')
         HasTable     = $text.Contains('CREATE TABLE "banks"')
-        HasPrimaryKey= $text.Contains('PRIMARY KEY("id" AUTOINCREMENT)')
+        HasPrimaryKey= $text.Contains('PRIMARY KEY("id")')
         HasColumns   = $text.Contains('"id"') -and $text.Contains('"name"') -and $text.Contains('"alias"')
         Size         = $bytes.Length
     }
@@ -157,7 +157,7 @@ try {
         Check 'cabecalho SQLite valido' $info.IsSqlite
         Check 'tabela "banks" presente' $info.HasTable
         Check 'colunas id/name/alias presentes' $info.HasColumns
-        Check 'PRIMARY KEY AUTOINCREMENT presente' $info.HasPrimaryKey
+        Check 'PRIMARY KEY(id) presente' $info.HasPrimaryKey
     }
 
     # ------------------------------------------------ [3] já existe

@@ -26,6 +26,12 @@
     </RunParams>
     <RequiredPackages>
       <Item>
+        <PackageName Value="FCL"/>
+      </Item>
+      <Item>
+        <PackageName Value="SQLDBLaz"/>
+      </Item>
+      <Item>
         <PackageName Value="LCL"/>
       </Item>
     </RequiredPackages>
@@ -45,7 +51,6 @@
       <Unit>
         <Filename Value="unitDatabase.pas"/>
         <IsPartOfProject Value="True"/>
-        <UnitName Value="unitDatabase"/>
       </Unit>
     </Units>
   </ProjectOptions>

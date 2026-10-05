@@ -8,6 +8,7 @@ object FormMoney: TFormMoney
   ClientWidth = 860
   Menu = MainMenu
   LCLVersion = '4.8.0.0'
+  OnCreate = FormCreate
   object pnFooter: TPanel
     Left = 0
     Height = 50
@@ -131,9 +132,9 @@ object FormMoney: TFormMoney
     Height = 472
     Top = 50
     Width = 860
-    ActivePage = tbJan
+    ActivePage = tbBancos
     Align = alClient
-    TabIndex = 0
+    TabIndex = 12
     TabOrder = 2
     object tbJan: TTabSheet
       Caption = 'JAN'
@@ -187,17 +188,19 @@ object FormMoney: TFormMoney
       Caption = 'Bancos'
       ClientHeight = 444
       ClientWidth = 852
-      TabVisible = False
       object gridBancos: TDBGrid
         Left = 200
         Height = 394
         Top = 0
         Width = 452
         Align = alClient
+        AutoFillColumns = True
         BorderSpacing.Left = 200
         BorderSpacing.Right = 200
         Color = clWindow
         Columns = <>
+        DataSource = DataSourceBancos
+        Options = [dgEditing, dgTitles, dgIndicator, dgColumnResize, dgColumnMove, dgColLines, dgRowLines, dgTabs, dgAlwaysShowSelection, dgConfirmDelete, dgCancelOnExit, dgDisplayMemoText]
         TabOrder = 0
       end
       object pnBancosControl: TPanel
@@ -224,6 +227,7 @@ object FormMoney: TFormMoney
           ChildSizing.ControlsPerLine = 100
           ClientHeight = 48
           ClientWidth = 425
+          DataSource = DataSourceBancos
           Options = []
           TabOrder = 0
         end
@@ -369,5 +373,40 @@ object FormMoney: TFormMoney
         Caption = 'Sobre'
       end
     end
+  end
+  object SQLite3ConnBancos: TSQLite3Connection
+    Connected = False
+    LoginPrompt = False
+    KeepConnection = False
+    Transaction = SQLTransactionBancos
+    AlwaysUseBigint = False
+    Left = 24
+    Top = 160
+  end
+  object SQLTransactionBancos: TSQLTransaction
+    Active = False
+    Database = SQLite3ConnBancos
+    Left = 24
+    Top = 224
+  end
+  object SQLQueryBanks: TSQLQuery
+    PacketRecords = -1
+    FieldDefs = <>
+    Database = SQLite3ConnBancos
+    Transaction = SQLTransactionBancos
+    SQL.Strings = (
+      'SELECT * FROM banks;'
+      ''
+    )
+    Options = [sqoKeepOpenOnCommit, sqoAutoApplyUpdates, sqoAutoCommit]
+    Params = <>
+    Macros = <>
+    Left = 24
+    Top = 344
+  end
+  object DataSourceBancos: TDataSource
+    DataSet = SQLQueryBanks
+    Left = 24
+    Top = 288
   end
 end
