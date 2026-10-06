@@ -132,13 +132,14 @@ object FormMoney: TFormMoney
     Height = 472
     Top = 50
     Width = 860
-    ActivePage = tbBancos
+    ActivePage = tbJan
     Align = alClient
-    TabIndex = 12
+    Options = [nboDoChangeOnSetIndex]
+    OnChange = PageControl1Change
+    TabIndex = 0
     TabOrder = 2
     object tbJan: TTabSheet
       Caption = 'JAN'
-      TabVisible = False
     end
     object tbFev: TTabSheet
       Caption = 'FEV'
@@ -188,6 +189,7 @@ object FormMoney: TFormMoney
       Caption = 'Bancos'
       ClientHeight = 444
       ClientWidth = 852
+      TabVisible = False
       object gridBancos: TDBGrid
         Left = 200
         Height = 394
@@ -213,10 +215,10 @@ object FormMoney: TFormMoney
         ClientWidth = 852
         TabOrder = 1
         object DBNavBancos: TDBNavigator
-          Left = 214
-          Height = 48
-          Top = 0
-          Width = 425
+          Left = 288
+          Height = 32
+          Top = 8
+          Width = 359
           Anchors = [akTop, akBottom]
           BevelOuter = bvNone
           ChildSizing.EnlargeHorizontal = crsScaleChilds
@@ -225,11 +227,24 @@ object FormMoney: TFormMoney
           ChildSizing.ShrinkVertical = crsScaleChilds
           ChildSizing.Layout = cclLeftToRightThenTopToBottom
           ChildSizing.ControlsPerLine = 100
-          ClientHeight = 48
-          ClientWidth = 425
+          ClientHeight = 32
+          ClientWidth = 359
           DataSource = DataSourceBancos
           Options = []
           TabOrder = 0
+        end
+        object sbtnVoltar: TSpeedButton
+          Left = 200
+          Height = 30
+          Top = 8
+          Width = 79
+          Caption = '←    Voltar'
+          Font.CharSet = ANSI_CHARSET
+          Font.Height = -13
+          Font.Pitch = fpVariable
+          Font.Quality = fqDraft
+          ParentFont = False
+          OnClick = sbtnVoltarClick
         end
       end
     end
@@ -237,7 +252,6 @@ object FormMoney: TFormMoney
       Caption = 'Saldos'
       ClientHeight = 444
       ClientWidth = 852
-      TabVisible = False
       object gridSaldos: TDBGrid
         Left = 0
         Height = 394
@@ -278,7 +292,7 @@ object FormMoney: TFormMoney
       end
     end
   end
-  object tsSaldo: TStaticText
+  object tsAnterior: TStaticText
     Left = 760
     Height = 17
     Top = 53
@@ -292,7 +306,7 @@ object FormMoney: TFormMoney
     ParentFont = False
     TabOrder = 3
   end
-  object tsAnterior: TStaticText
+  object tslblAnterior: TStaticText
     Left = 696
     Height = 18
     Top = 53
@@ -310,9 +324,9 @@ object FormMoney: TFormMoney
   end
   object gridTrans: TDBGrid
     Left = 64
-    Height = 416
+    Height = 232
     Top = 88
-    Width = 728
+    Width = 736
     BorderSpacing.Top = 24
     Color = clWindow
     Columns = <>
@@ -335,6 +349,7 @@ object FormMoney: TFormMoney
       end
       object miList: TMenuItem
         Caption = 'Lista de Bancos'
+        OnClick = miListClick
       end
       object Separator2: TMenuItem
         Caption = '-'
@@ -365,6 +380,12 @@ object FormMoney: TFormMoney
       end
       object miImpSal: TMenuItem
         Caption = 'Importar Saldos (CSV)'
+      end
+      object Separator4: TMenuItem
+        Caption = '-'
+      end
+      object miGerSal: TMenuItem
+        Caption = 'Gerenciar Saldos'
       end
     end
     object mmHelp: TMenuItem
