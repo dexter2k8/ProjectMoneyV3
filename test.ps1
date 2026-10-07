@@ -69,7 +69,6 @@ public class UiTest {
     [DllImport("user32.dll")] static extern IntPtr GetSubMenu(IntPtr h, int pos);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetMenuString(IntPtr h, uint id, StringBuilder s, int max, bool byPos);
     [DllImport("user32.dll")] static extern uint GetMenuState(IntPtr h, uint id, uint flags);
-    [DllImport("user32.dll")] static extern int GetMenuItemCount(IntPtr h);
     [DllImport("user32.dll")] static extern int GetDlgCtrlID(IntPtr h);
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
     [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
@@ -162,37 +161,32 @@ public class UiTest {
         if (st == 0xFFFFFFFF) return false;
         return (st & 0x03) == 0;
     }
-    // [itens de comando, habilitados] do submenu que contem o item "filho"
-    // (mesma varredura do MenuId, entao nao depende da posicao fixa no .lfm).
-    // Separadores nao sao comandos e ficam fora do total - assim da para
-    // conferir que TODOS os itens de um menu mudaram de estado junto.
-    public static int[] SubMenuEnabled(IntPtr main, string filho) {
-        int comandos = 0, habilitados = 0;
+    // Estado do menu de PRIMEIRO nivel que contem o item "filho":
+    // 1 = habilitado, 0 = desabilitado, -1 = nao achou. A localizacao e' pela
+    // legenda de um filho conhecido (mesmo truque do MenuId), entao nao
+    // depende do acento de "Transacoes" nem da posicao fixa no .lfm.
+    // No menu raiz o item e' indicado por POSICAO (MF_BYPOSITION=0x400) e o
+    // GetMenuState devolve a entrada de menu - que e' o que decide se o
+    // submenu abre (o estado dos filhos NAO herda o do pai).
+    public static int MenuTopState(IntPtr main, string filho) {
         IntPtr menu = GetMenu(main);
-        if (menu != IntPtr.Zero) {
-            for (int sub = 0; sub < 16; sub++) {
-                IntPtr sm = GetSubMenu(menu, sub);
-                if (sm == IntPtr.Zero) continue;
-                bool achou = false;
-                var sb = new StringBuilder(256);
-                for (uint id = 1; id <= 120 && !achou; id++) {
-                    sb.Length = 0;
-                    GetMenuString(sm, id, sb, 256, false);
-                    if (sb.ToString() == filho) achou = true;
-                }
-                if (!achou) continue;
-                int n = GetMenuItemCount(sm);
-                for (int i = 0; i < n; i++) {
-                    uint st = GetMenuState(sm, (uint)i, 0x00000400);   // MF_BYPOSITION
-                    if (st == 0xFFFFFFFF) continue;
-                    if ((st & 0x00000800) != 0) continue;             // separador
-                    comandos++;
-                    if ((st & 0x03) == 0) habilitados++;
-                }
-                break;
+        if (menu == IntPtr.Zero) return -1;
+        for (int pos = 0; pos < 16; pos++) {
+            IntPtr sm = GetSubMenu(menu, pos);
+            if (sm == IntPtr.Zero) continue;
+            bool achou = false;
+            var sb = new StringBuilder(256);
+            for (uint id = 1; id <= 120 && !achou; id++) {
+                sb.Length = 0;
+                GetMenuString(sm, id, sb, 256, false);
+                if (sb.ToString() == filho) achou = true;
             }
+            if (!achou) continue;
+            uint st = GetMenuState(menu, (uint)pos, 0x00000400);   // MF_BYPOSITION
+            if (st == 0xFFFFFFFF) return -1;
+            return (st & 0x03) == 0 ? 1 : 0;
         }
-        return new int[] { comandos, habilitados };
+        return -1;
     }
     // Janelas filhas visiveis, no formato "classe | id | texto | x,y WxH".
     // Comparar antes/depois prova que a aba abriu (novas janelas) e que o
@@ -753,12 +747,12 @@ try {
         Check 'item de menu "Fechar Database" encontrado' ($idFecha -gt 0) ('id=' + $idFecha)
         Check 'miClose desativado na inicializacao (sem database)' (
             ($idFecha -gt 0) -and (-not [UiTest]::MenuItemEnabled($mainFecha, $idFecha)))
-        # Mesma regra para TODOS os itens do menu "Transacoes" (do miImport
-        # ate' o miGerCon): o localizador e' o primeiro item, sempre ASCII.
-        $mmFecha = [UiTest]::SubMenuEnabled($mainFecha, 'Importar OFC/OFX')
-        Check 'menu Transacoes desabilitado na inicializacao' (
-            ($mmFecha[0] -gt 0) -and ($mmFecha[1] -eq 0)) (
-            'comandos=' + $mmFecha[0] + ' habilitados=' + $mmFecha[1])
+        # Mesma regra para o menu "Transacoes" INTEIRO (e nao item a item):
+        # desativando a entrada de primeiro nivel o submenu nem abre. O
+        # localizador e' um filho conhecido, sempre ASCII.
+        $mmFecha = [UiTest]::MenuTopState($mainFecha, 'Importar OFC/OFX')
+        Check 'menu Transacoes desabilitado na inicializacao' ($mmFecha -eq 0) (
+            'estado=' + $mmFecha)
 
         # (a) abre o database de contas: sem conexao nao ha nada para fechar
         $dlgF = Invoke-MenuFileDialog $pFecha 'Abrir Database'
@@ -781,10 +775,9 @@ try {
                 'janelas=' + $visAb.Count)
             Check 'miClose ativado ao abrir o database' (
                 [UiTest]::MenuItemEnabled($mainFecha, $idFecha))
-            $mmFecha = [UiTest]::SubMenuEnabled($mainFecha, 'Importar OFC/OFX')
-            Check 'menu Transacoes habilitado ao abrir' (
-                ($mmFecha[0] -gt 0) -and ($mmFecha[1] -eq $mmFecha[0])) (
-                'comandos=' + $mmFecha[0] + ' habilitados=' + $mmFecha[1])
+            $mmFecha = [UiTest]::MenuTopState($mainFecha, 'Importar OFC/OFX')
+            Check 'menu Transacoes habilitado ao abrir' ($mmFecha -eq 1) (
+                'estado=' + $mmFecha)
         }
 
         # (b) "Fechar Database": conexao encerrada -> o arquivo volta a ser
@@ -801,10 +794,9 @@ try {
                 'janelas=' + $visFec.Count)
             Check 'miClose desativado apos o fechar' (
                 -not [UiTest]::MenuItemEnabled($mainFecha, $idFecha))
-            $mmFecha = [UiTest]::SubMenuEnabled($mainFecha, 'Importar OFC/OFX')
-            Check 'menu Transacoes desabilitado apos o fechar' (
-                ($mmFecha[0] -gt 0) -and ($mmFecha[1] -eq 0)) (
-                'comandos=' + $mmFecha[0] + ' habilitados=' + $mmFecha[1])
+            $mmFecha = [UiTest]::MenuTopState($mainFecha, 'Importar OFC/OFX')
+            Check 'menu Transacoes desabilitado apos o fechar' ($mmFecha -eq 0) (
+                'estado=' + $mmFecha)
             $pFecha.Refresh()
             Check 'aplicacao permanece viva ao fechar' (-not $pFecha.HasExited)
 
@@ -834,10 +826,9 @@ try {
                     'janelas=' + $visRe.Count)
                 Check 'miClose reativado ao reconectar' (
                     [UiTest]::MenuItemEnabled($mainFecha, $idFecha))
-                $mmFecha = [UiTest]::SubMenuEnabled($mainFecha, 'Importar OFC/OFX')
-                Check 'menu Transacoes habilitado ao reconectar' (
-                    ($mmFecha[0] -gt 0) -and ($mmFecha[1] -eq $mmFecha[0])) (
-                    'comandos=' + $mmFecha[0] + ' habilitados=' + $mmFecha[1])
+                $mmFecha = [UiTest]::MenuTopState($mainFecha, 'Importar OFC/OFX')
+                Check 'menu Transacoes habilitado ao reconectar' ($mmFecha -eq 1) (
+                    'estado=' + $mmFecha)
             }
             $pFecha.Refresh()
             Check 'aplicacao permanece viva ao reconectar' (-not $pFecha.HasExited)
@@ -880,10 +871,9 @@ try {
         # "Lista de Bancos" (menu Arquivo), que continua sempre disponivel.
         $idLista = [UiTest]::MenuId($mainNav, 'Lista de Bancos')
         Check 'item de menu "Lista de Bancos" encontrado' ($idLista -gt 0) ('id=' + $idLista)
-        $mmNav = [UiTest]::SubMenuEnabled($mainNav, 'Importar OFC/OFX')
-        Check 'menu Transacoes desabilitado sem database' (
-            ($mmNav[0] -gt 0) -and ($mmNav[1] -eq 0)) (
-            'comandos=' + $mmNav[0] + ' habilitados=' + $mmNav[1])
+        $mmNav = [UiTest]::MenuTopState($mainNav, 'Importar OFC/OFX')
+        Check 'menu Transacoes desabilitado sem database' ($mmNav -eq 0) (
+            'estado=' + $mmNav)
         Check 'miList habilitado (navegacao disponivel sem database)' (
             [UiTest]::MenuItemEnabled($mainNav, $idLista))
 
@@ -932,10 +922,9 @@ try {
 
             # Com database o menu "Transacoes" volta a funcionar todo - e o
             # "Gerenciar Contas" volta a ser navegavel (e' ele o proximo passo).
-            $mmNav = [UiTest]::SubMenuEnabled($mainNav, 'Importar OFC/OFX')
-            Check 'menu Transacoes habilitado com database' (
-                ($mmNav[0] -gt 0) -and ($mmNav[1] -eq $mmNav[0])) (
-                'comandos=' + $mmNav[0] + ' habilitados=' + $mmNav[1])
+            $mmNav = [UiTest]::MenuTopState($mainNav, 'Importar OFC/OFX')
+            Check 'menu Transacoes habilitado com database' ($mmNav -eq 1) (
+                'estado=' + $mmNav)
 
             $cCom = Invoke-CicloVoltar $mainNav $idCon
             Check 'navegacao revelou a interface (com database)' ($cCom.Novas -gt 0) (
@@ -971,10 +960,9 @@ try {
                     'janelas=' + $visFec8.Count)
 
                 # E o menu "Transacoes" volta a ficar todo desabilitado.
-                $mmNav = [UiTest]::SubMenuEnabled($mainNav, 'Importar OFC/OFX')
-                Check 'menu Transacoes desabilitado apos o Fechar Database' (
-                    ($mmNav[0] -gt 0) -and ($mmNav[1] -eq 0)) (
-                    'comandos=' + $mmNav[0] + ' habilitados=' + $mmNav[1])
+                $mmNav = [UiTest]::MenuTopState($mainNav, 'Importar OFC/OFX')
+                Check 'menu Transacoes desabilitado apos o Fechar Database' ($mmNav -eq 0) (
+                    'estado=' + $mmNav)
 
                 $cFec = Invoke-CicloVoltar $mainNav $idLista
                 Check 'navegacao revelou a interface (apos o fechar)' ($cFec.Novas -gt 0) (

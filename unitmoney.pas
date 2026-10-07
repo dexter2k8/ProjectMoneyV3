@@ -251,18 +251,15 @@ end;
 procedure TFormMoney.AtualizarEstadoDatabase;
 var
   aberto: Boolean;
-  i: Integer;
 begin
   aberto := DatabaseAberto;
   SetInterfaceVisible(aberto);
   // Sem database aberto não há nada para fechar: o item fica desativado.
   miClose.Enabled := aberto;
-  // Todo o menu "Transações" opera sobre o database de contas (importar,
-  // exportar, gerenciar): sem ligação, nada ali faz sentido. Os separadores
-  // não são comandos e ficam de fora do laço.
-  for i := 0 to mmTransactions.Count - 1 do
-    if mmTransactions.Items[i].Caption <> '-' then
-      mmTransactions.Items[i].Enabled := aberto;
+  // Todo o menu "Transações" (importar, exportar, gerenciar) opera sobre o
+  // database de contas: sem ligação, não há transações a fazer. Desativar o
+  // menu de primeiro nível cobre os itens de uma vez - inclusive os futuros.
+  mmTransactions.Enabled := aberto;
 end;
 
 procedure TFormMoney.miCloseClick(Sender: TObject);
