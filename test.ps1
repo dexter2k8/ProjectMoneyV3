@@ -68,6 +68,8 @@ public class UiTest {
     [DllImport("user32.dll")] static extern IntPtr GetMenu(IntPtr h);
     [DllImport("user32.dll")] static extern IntPtr GetSubMenu(IntPtr h, int pos);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetMenuString(IntPtr h, uint id, StringBuilder s, int max, bool byPos);
+    [DllImport("user32.dll")] static extern uint GetMenuState(IntPtr h, uint id, uint flags);
+    [DllImport("user32.dll")] static extern int GetMenuItemCount(IntPtr h);
     [DllImport("user32.dll")] static extern int GetDlgCtrlID(IntPtr h);
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
     [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
@@ -150,6 +152,47 @@ public class UiTest {
             }
         }
         return -1;
+    }
+    // Item de menu habilitado? MF_BYCOMMAND=0; MF_GRAYED (0x01) ou
+    // MF_DISABLED (0x02) ligado = desativado; item ausente = desativado.
+    public static bool MenuItemEnabled(IntPtr main, int id) {
+        IntPtr m = GetMenu(main);
+        if (m == IntPtr.Zero || id < 0) return false;
+        uint st = GetMenuState(m, (uint)id, 0x00000000);
+        if (st == 0xFFFFFFFF) return false;
+        return (st & 0x03) == 0;
+    }
+    // [itens de comando, habilitados] do submenu que contem o item "filho"
+    // (mesma varredura do MenuId, entao nao depende da posicao fixa no .lfm).
+    // Separadores nao sao comandos e ficam fora do total - assim da para
+    // conferir que TODOS os itens de um menu mudaram de estado junto.
+    public static int[] SubMenuEnabled(IntPtr main, string filho) {
+        int comandos = 0, habilitados = 0;
+        IntPtr menu = GetMenu(main);
+        if (menu != IntPtr.Zero) {
+            for (int sub = 0; sub < 16; sub++) {
+                IntPtr sm = GetSubMenu(menu, sub);
+                if (sm == IntPtr.Zero) continue;
+                bool achou = false;
+                var sb = new StringBuilder(256);
+                for (uint id = 1; id <= 120 && !achou; id++) {
+                    sb.Length = 0;
+                    GetMenuString(sm, id, sb, 256, false);
+                    if (sb.ToString() == filho) achou = true;
+                }
+                if (!achou) continue;
+                int n = GetMenuItemCount(sm);
+                for (int i = 0; i < n; i++) {
+                    uint st = GetMenuState(sm, (uint)i, 0x00000400);   // MF_BYPOSITION
+                    if (st == 0xFFFFFFFF) continue;
+                    if ((st & 0x00000800) != 0) continue;             // separador
+                    comandos++;
+                    if ((st & 0x03) == 0) habilitados++;
+                }
+                break;
+            }
+        }
+        return new int[] { comandos, habilitados };
     }
     // Janelas filhas visiveis, no formato "classe | id | texto | x,y WxH".
     // Comparar antes/depois prova que a aba abriu (novas janelas) e que o
@@ -335,9 +378,11 @@ function Wait-Interface([IntPtr]$Main, [bool]$Esperado) {
     return $vis
 }
 
-# Acha o painel da tbContas entre as janelas NOVAS (em relacao a $Base) e clica
-# em sbtnVoltarContas. Painel = janela de altura 50 MAIS BAIXA da tela: o
-# pnHeader tambem tem 50px, mas fica no topo (e o pnFooter some nessa aba).
+# Acha o painel inferior com o botao "Voltar" entre as janelas NOVAS (em
+# relacao a $Base) e clica nele. tbBancos (pnBancosControl) e tbContas
+# (pnContas) tem a mesma geometria: 50px de altura e botao em (200,8) 79x30.
+# Painel = janela de altura 50 MAIS BAIXA da tela: o pnHeader tambem tem
+# 50px, mas fica no topo (e o pnFooter some nas duas abas).
 # Devolve o HWND do painel (Zero quando nao achou).
 function Invoke-VoltarContas([IntPtr]$Main, $Base) {
     $atual = @([UiTest]::Visible($Main))
@@ -363,9 +408,9 @@ function Invoke-VoltarContas([IntPtr]$Main, $Base) {
     return $alvo
 }
 
-# Um ciclo completo do botao "Voltar": tira o estado ATUAL, navega (miGerCon),
-# espera a interface aparecer, clica em sbtnVoltarContas e espera o painel da
-# aba sumir. Devolve:
+# Um ciclo completo do botao "Voltar": tira o estado ATUAL, navega pelo menu
+# ($MenuId = miList -> tbBancos ou miGerCon -> tbContas), espera a interface
+# aparecer, clica no "Voltar" do painel inferior e espera a aba sumir. Devolve:
 #   Inicio = estado capturado antes de navegar (base real desse ciclo)
 #   Novas  = janelas novas que a navegacao trouxe (0 = a tela nao abriu)
 #   Painel = HWND do painel onde ficou o botao (Zero = nao achou)
@@ -702,6 +747,19 @@ try {
         Check 'aplicacao abriu (janela principal)' ($mainFecha -ne [IntPtr]::Zero)
         Check 'miNew-test.db dos passos anteriores disponivel' (Test-Path $minewDb)
 
+        # O item so' faz sentido com database aberto: na inicializacao nao
+        # existe nada para fechar, entao ele tem de nascer desativado.
+        $idFecha = [UiTest]::MenuId($mainFecha, 'Fechar Database')
+        Check 'item de menu "Fechar Database" encontrado' ($idFecha -gt 0) ('id=' + $idFecha)
+        Check 'miClose desativado na inicializacao (sem database)' (
+            ($idFecha -gt 0) -and (-not [UiTest]::MenuItemEnabled($mainFecha, $idFecha)))
+        # Mesma regra para TODOS os itens do menu "Transacoes" (do miImport
+        # ate' o miGerCon): o localizador e' o primeiro item, sempre ASCII.
+        $mmFecha = [UiTest]::SubMenuEnabled($mainFecha, 'Importar OFC/OFX')
+        Check 'menu Transacoes desabilitado na inicializacao' (
+            ($mmFecha[0] -gt 0) -and ($mmFecha[1] -eq 0)) (
+            'comandos=' + $mmFecha[0] + ' habilitados=' + $mmFecha[1])
+
         # (a) abre o database de contas: sem conexao nao ha nada para fechar
         $dlgF = Invoke-MenuFileDialog $pFecha 'Abrir Database'
         Check 'dialogo "Abrir" abriu' ($dlgF -ne [IntPtr]::Zero)
@@ -721,12 +779,16 @@ try {
             $visAb = @(Wait-Interface $mainFecha $true)
             Check 'interface revelada ao abrir (miOpen)' ($visAb.Count -gt 0) (
                 'janelas=' + $visAb.Count)
+            Check 'miClose ativado ao abrir o database' (
+                [UiTest]::MenuItemEnabled($mainFecha, $idFecha))
+            $mmFecha = [UiTest]::SubMenuEnabled($mainFecha, 'Importar OFC/OFX')
+            Check 'menu Transacoes habilitado ao abrir' (
+                ($mmFecha[0] -gt 0) -and ($mmFecha[1] -eq $mmFecha[0])) (
+                'comandos=' + $mmFecha[0] + ' habilitados=' + $mmFecha[1])
         }
 
         # (b) "Fechar Database": conexao encerrada -> o arquivo volta a ser
         # legivel mesmo com a aplicacao viva (e nada de dialogo de erro).
-        $idFecha = [UiTest]::MenuId($mainFecha, 'Fechar Database')
-        Check 'item de menu "Fechar Database" encontrado' ($idFecha -gt 0) ('id=' + $idFecha)
         if ($idFecha -gt 0) {
             [void][UiTest]::Msg($mainFecha, 0x0111, [IntPtr]$idFecha, [IntPtr]::Zero)
             Start-Sleep -Milliseconds 1000
@@ -737,10 +799,18 @@ try {
             $visFec = @(Wait-Interface $mainFecha $false)
             Check 'interface oculta apos o Fechar Database' ($visFec.Count -eq 0) (
                 'janelas=' + $visFec.Count)
+            Check 'miClose desativado apos o fechar' (
+                -not [UiTest]::MenuItemEnabled($mainFecha, $idFecha))
+            $mmFecha = [UiTest]::SubMenuEnabled($mainFecha, 'Importar OFC/OFX')
+            Check 'menu Transacoes desabilitado apos o fechar' (
+                ($mmFecha[0] -gt 0) -and ($mmFecha[1] -eq 0)) (
+                'comandos=' + $mmFecha[0] + ' habilitados=' + $mmFecha[1])
             $pFecha.Refresh()
             Check 'aplicacao permanece viva ao fechar' (-not $pFecha.HasExited)
 
-            # fechar de novo e' no-op: nao pode quebrar nem abrir dialogo
+            # Segundo clique em "Fechar Database": com o item ja' desativado
+            # o comando nem chega ao handler; mesmo que chegue, fechar algo
+            # ja' fechado e' no-op (nao pode quebrar nem abrir dialogo).
             [void][UiTest]::Msg($mainFecha, 0x0111, [IntPtr]$idFecha, [IntPtr]::Zero)
             Start-Sleep -Milliseconds 600
             Check 'segundo fechar tambem sem dialogo' (
@@ -762,6 +832,12 @@ try {
                 $visRe = @(Wait-Interface $mainFecha $true)
                 Check 'interface revelada apos reconectar' ($visRe.Count -gt 0) (
                     'janelas=' + $visRe.Count)
+                Check 'miClose reativado ao reconectar' (
+                    [UiTest]::MenuItemEnabled($mainFecha, $idFecha))
+                $mmFecha = [UiTest]::SubMenuEnabled($mainFecha, 'Importar OFC/OFX')
+                Check 'menu Transacoes habilitado ao reconectar' (
+                    ($mmFecha[0] -gt 0) -and ($mmFecha[1] -eq $mmFecha[0])) (
+                    'comandos=' + $mmFecha[0] + ' habilitados=' + $mmFecha[1])
             }
             $pFecha.Refresh()
             Check 'aplicacao permanece viva ao reconectar' (-not $pFecha.HasExited)
@@ -799,15 +875,26 @@ try {
 
         $idCon = [UiTest]::MenuId($mainNav, 'Gerenciar Contas')
         Check 'item de menu "Gerenciar Contas" encontrado' ($idCon -gt 0) ('id=' + $idCon)
+        # Sem database o menu "Transacoes" fica TODO desabilitado (inclusive o
+        # "Gerenciar Contas"), entao a navegacao de prova passa a ser pela
+        # "Lista de Bancos" (menu Arquivo), que continua sempre disponivel.
+        $idLista = [UiTest]::MenuId($mainNav, 'Lista de Bancos')
+        Check 'item de menu "Lista de Bancos" encontrado' ($idLista -gt 0) ('id=' + $idLista)
+        $mmNav = [UiTest]::SubMenuEnabled($mainNav, 'Importar OFC/OFX')
+        Check 'menu Transacoes desabilitado sem database' (
+            ($mmNav[0] -gt 0) -and ($mmNav[1] -eq 0)) (
+            'comandos=' + $mmNav[0] + ' habilitados=' + $mmNav[1])
+        Check 'miList habilitado (navegacao disponivel sem database)' (
+            [UiTest]::MenuItemEnabled($mainNav, $idLista))
 
-        if ($idCon -gt 0) {
+        if (($idCon -gt 0) -and ($idLista -gt 0)) {
             # ---- (a) SEM database em aberto: navegar revela e o "Voltar"
             # devolve o estado vazio. Dois ciclos = da para repetir.
             for ($ciclo = 1; $ciclo -le 2; $ciclo++) {
-                $c = Invoke-CicloVoltar $mainNav $idCon
+                $c = Invoke-CicloVoltar $mainNav $idLista
                 Check ('navegacao revelou a interface (ciclo ' + $ciclo + ')') (
                     $c.Novas -gt 0) ('novas=' + $c.Novas)
-                Check ('painel da tbContas localizado (ciclo ' + $ciclo + ')') (
+                Check ('painel do Voltar localizado (ciclo ' + $ciclo + ')') (
                     $c.Painel -ne [IntPtr]::Zero)
                 $estado = $c.Pos
                 for ($t = 0; ($t -lt 20) -and (@(Compare-Object $baseNav $estado).Count -ne 0); $t++) {
@@ -843,6 +930,13 @@ try {
             Check 'interface revelada apos o miOpen (sem navegar)' (
                 $visAb8.Count -gt 0) ('janelas=' + $visAb8.Count)
 
+            # Com database o menu "Transacoes" volta a funcionar todo - e o
+            # "Gerenciar Contas" volta a ser navegavel (e' ele o proximo passo).
+            $mmNav = [UiTest]::SubMenuEnabled($mainNav, 'Importar OFC/OFX')
+            Check 'menu Transacoes habilitado com database' (
+                ($mmNav[0] -gt 0) -and ($mmNav[1] -eq $mmNav[0])) (
+                'comandos=' + $mmNav[0] + ' habilitados=' + $mmNav[1])
+
             $cCom = Invoke-CicloVoltar $mainNav $idCon
             Check 'navegacao revelou a interface (com database)' ($cCom.Novas -gt 0) (
                 'novas=' + $cCom.Novas)
@@ -876,10 +970,16 @@ try {
                 Check 'interface oculta apos o Fechar Database' ($visFec8.Count -eq 0) (
                     'janelas=' + $visFec8.Count)
 
-                $cFec = Invoke-CicloVoltar $mainNav $idCon
+                # E o menu "Transacoes" volta a ficar todo desabilitado.
+                $mmNav = [UiTest]::SubMenuEnabled($mainNav, 'Importar OFC/OFX')
+                Check 'menu Transacoes desabilitado apos o Fechar Database' (
+                    ($mmNav[0] -gt 0) -and ($mmNav[1] -eq 0)) (
+                    'comandos=' + $mmNav[0] + ' habilitados=' + $mmNav[1])
+
+                $cFec = Invoke-CicloVoltar $mainNav $idLista
                 Check 'navegacao revelou a interface (apos o fechar)' ($cFec.Novas -gt 0) (
                     'novas=' + $cFec.Novas)
-                Check 'painel da tbContas localizado (apos o fechar)' (
+                Check 'painel do Voltar localizado (apos o fechar)' (
                     $cFec.Painel -ne [IntPtr]::Zero)
                 $estFec = $cFec.Pos
                 for ($t = 0; ($t -lt 20) -and (@(Compare-Object $baseNav $estFec).Count -ne 0); $t++) {

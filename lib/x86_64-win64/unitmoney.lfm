@@ -56,7 +56,6 @@ object FormMoney: TFormMoney
       Top = 12
       Width = 91
       Caption = 'Show Controls'
-      Enabled = False
       TabOrder = 0
       OnClick = toggleShowControlsClick
     end

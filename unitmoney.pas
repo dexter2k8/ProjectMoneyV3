@@ -112,6 +112,9 @@ type
     // "Novo Database"/"Abrir Database" ligam a query de contas e "Fechar
     // Database" a desliga: é esse estado que manda na interface.
     function DatabaseAberto: Boolean;
+    // Aplica o estado acima de uma vez: visibilidade da página + enable do
+    // "Fechar Database" (sem database aberto não há nada para fechar).
+    procedure AtualizarEstadoDatabase;
 
   public
 
@@ -153,10 +156,10 @@ begin
   // Durante o streaming o OnChange não dispara (csLoading): aplica a regra da
   // lista de bancos aqui também (é idempotente).
   PageControl1Change(nil);
-  // Por último (senão o PageControl1Change acima reexibiria): a tela inicial
-  // fica só com o MainMenu — a interface aparece na navegação e quando um
-  // database é criado/aberto.
-  SetInterfaceVisible(False);
+  // Por último (senão o PageControl1Change acima reexibiria): na tela inicial
+  // não há database aberto, então fica só com o MainMenu e com o "Fechar
+  // Database" desativado — a interface aparece na navegação e no miNew/miOpen.
+  AtualizarEstadoDatabase;
 end;
 
 procedure TFormMoney.PageControl1Change(Sender: TObject);
@@ -245,6 +248,23 @@ begin
   Result := SQLQueryContas.Active;
 end;
 
+procedure TFormMoney.AtualizarEstadoDatabase;
+var
+  aberto: Boolean;
+  i: Integer;
+begin
+  aberto := DatabaseAberto;
+  SetInterfaceVisible(aberto);
+  // Sem database aberto não há nada para fechar: o item fica desativado.
+  miClose.Enabled := aberto;
+  // Todo o menu "Transações" opera sobre o database de contas (importar,
+  // exportar, gerenciar): sem ligação, nada ali faz sentido. Os separadores
+  // não são comandos e ficam de fora do laço.
+  for i := 0 to mmTransactions.Count - 1 do
+    if mmTransactions.Items[i].Caption <> '-' then
+      mmTransactions.Items[i].Enabled := aberto;
+end;
+
 procedure TFormMoney.miCloseClick(Sender: TObject);
 begin
   // "Fechar Database" encerra a ligação com o arquivo de contas (o mesmo que
@@ -259,9 +279,9 @@ begin
       MessageDlg('Não foi possível fechar o database.' + LineEnding + E.Message,
         mtError, [mbOK], 0);
   end;
-  // Fechou: sem database em aberto os elementos da página são ocultados (se o
-  // fechar falhou, a query continua ligada e a interface fica).
-  SetInterfaceVisible(DatabaseAberto);
+  // Fechou: a página é ocultada e o "Fechar Database" volta a ser desativado
+  // (se o fechar falhou, a query continua ligada e nada muda).
+  AtualizarEstadoDatabase;
 end;
 
 procedure TFormMoney.miGerConClick(Sender: TObject);
@@ -328,9 +348,9 @@ begin
         '" foi criado, mas não pôde ser aberto.' + LineEnding + E.Message,
         mtError, [mbOK], 0);
   end;
-  // Criou e abriu: os elementos da página aparecem (se não abriu, a ligação
-  // anterior já tinha sido fechada e eles são ocultados).
-  SetInterfaceVisible(DatabaseAberto);
+  // Criou e abriu: a página aparece e o "Fechar Database" é ativado (se não
+  // abriu, a ligação anterior já tinha sido fechada e os dois são desligados).
+  AtualizarEstadoDatabase;
 end;
 
 procedure TFormMoney.miOpenClick(Sender: TObject);
@@ -381,9 +401,9 @@ begin
         ExtractFileName(abrirArquivo) + '".' + LineEnding + E.Message,
         mtError, [mbOK], 0);
   end;
-  // Abriu: os elementos da página aparecem (um arquivo rejeitado antes daqui
-  // nem mexe na ligação — nesse caso a interface continua como estava).
-  SetInterfaceVisible(DatabaseAberto);
+  // Abriu: a página aparece e o "Fechar Database" é ativado (um arquivo
+  // rejeitado antes daqui nem mexe na ligação: nada muda por aqui).
+  AtualizarEstadoDatabase;
 end;
 
 procedure TFormMoney.sbtnVoltarClick(Sender: TObject);
