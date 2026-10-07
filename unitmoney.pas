@@ -104,6 +104,14 @@ type
     // Base do miList/miGerCon: guarda guias + título e ativa a aba com as
     // guias ocultas (o "Voltar" devolve o estado salvo aqui).
     procedure NavigateToTab(ATab: TTabSheet);
+    // Liga/desliga os blocos de interface (cabeçalho, guias, rodapé e textos
+    // "Anterior"). Revela em: navegação (miList/miGerCon), miNew e miOpen;
+    // esconde em: inicialização, "Voltar" sem database e miClose. No revelar
+    // a régua da página ativa é reaplicada.
+    procedure SetInterfaceVisible(AVisible: Boolean);
+    // "Novo Database"/"Abrir Database" ligam a query de contas e "Fechar
+    // Database" a desliga: é esse estado que manda na interface.
+    function DatabaseAberto: Boolean;
 
   public
 
@@ -145,6 +153,10 @@ begin
   // Durante o streaming o OnChange não dispara (csLoading): aplica a regra da
   // lista de bancos aqui também (é idempotente).
   PageControl1Change(nil);
+  // Por último (senão o PageControl1Change acima reexibiria): a tela inicial
+  // fica só com o MainMenu — a interface aparece na navegação e quando um
+  // database é criado/aberto.
+  SetInterfaceVisible(False);
 end;
 
 procedure TFormMoney.PageControl1Change(Sender: TObject);
@@ -202,6 +214,35 @@ begin
   PageControl1.ActivePage := ATab;
   for i := 0 to PageControl1.PageCount - 1 do
     PageControl1.Pages[i].TabVisible := False;
+  // Revela SEMPRE e por último: o "Fechar Database" esconde a interface até
+  // com a lista na tela, e navegar de novo tem de trazê-la de volta. Como é
+  // a última linha, a régua vale a página recém-ativada (mesmo quando o
+  // OnChange não dispara porque a página não mudou).
+  SetInterfaceVisible(True);
+end;
+
+procedure TFormMoney.SetInterfaceVisible(AVisible: Boolean);
+begin
+  pnHeader.Visible := AVisible;
+  PageControl1.Visible := AVisible;
+  if AVisible then
+    // Revelar não é só levantar os blocos: na lista de bancos e na aba de
+    // contas o rodapé, os combos e o "Anterior" continuam escondidos.
+    PageControl1Change(nil)
+  else
+  begin
+    pnFooter.Visible := False;
+    tsAnterior.Visible := False;
+    tslblAnterior.Visible := False;
+  end;
+end;
+
+function TFormMoney.DatabaseAberto: Boolean;
+begin
+  // É a query da tbContas abrindo que define "tem database": ela só liga no
+  // miNew/miOpen e desliga no miClose (o banks.db do menu não conta — ele
+  // abre sozinho na inicialização).
+  Result := SQLQueryContas.Active;
 end;
 
 procedure TFormMoney.miCloseClick(Sender: TObject);
@@ -218,6 +259,9 @@ begin
       MessageDlg('Não foi possível fechar o database.' + LineEnding + E.Message,
         mtError, [mbOK], 0);
   end;
+  // Fechou: sem database em aberto os elementos da página são ocultados (se o
+  // fechar falhou, a query continua ligada e a interface fica).
+  SetInterfaceVisible(DatabaseAberto);
 end;
 
 procedure TFormMoney.miGerConClick(Sender: TObject);
@@ -284,6 +328,9 @@ begin
         '" foi criado, mas não pôde ser aberto.' + LineEnding + E.Message,
         mtError, [mbOK], 0);
   end;
+  // Criou e abriu: os elementos da página aparecem (se não abriu, a ligação
+  // anterior já tinha sido fechada e eles são ocultados).
+  SetInterfaceVisible(DatabaseAberto);
 end;
 
 procedure TFormMoney.miOpenClick(Sender: TObject);
@@ -334,6 +381,9 @@ begin
         ExtractFileName(abrirArquivo) + '".' + LineEnding + E.Message,
         mtError, [mbOK], 0);
   end;
+  // Abriu: os elementos da página aparecem (um arquivo rejeitado antes daqui
+  // nem mexe na ligação — nesse caso a interface continua como estava).
+  SetInterfaceVisible(DatabaseAberto);
 end;
 
 procedure TFormMoney.sbtnVoltarClick(Sender: TObject);
@@ -349,6 +399,13 @@ begin
     FInListView := False;
   end;
   PageControl1.ActivePage := tbJan;
+  // Depois do OnChange acima (senão o rodapé voltaria a aparecer): sem
+  // database em aberto não há o que mostrar na tela de extratos, então o
+  // "Voltar" devolve o estado inicial (só o MainMenu). Com database (miNew/
+  // miOpen) a interface revelada na navegação fica de pé — e o "Fechar
+  // Database" volta a zerar a regra.
+  if not DatabaseAberto then
+    SetInterfaceVisible(False);
 end;
 
 procedure TFormMoney.toggleShowControlsClick(Sender: TObject);

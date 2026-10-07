@@ -12,10 +12,11 @@
     [2] Sem banks.db  -> aplicação cria o arquivo com a estrutura esperada
     [3] Com banks.db  -> aplicação não recria nem altera o arquivo
     [4] Sem sqlite3.dll -> erro tratado com diálogo (sem crash, sem arquivo parcial)
-    [5] Novo Database (miNew) -> cria um .db com as tabelas contas/extratos/saldos
-    [6] Abrir Database (miOpen) -> abre o .db valido e rejeita arquivo invalido
-    [7] Fechar Database (miClose) -> encerra a conexao com o arquivo de contas
-    [8] Gerenciar Contas (miGerCon) -> abre tbContas e o "Voltar" devolve o estado
+    [5] Novo Database (miNew) -> cria um .db com as tabelas contas/extratos/saldos e revela a interface
+    [6] Abrir Database (miOpen) -> abre o .db valido, rejeita arquivo invalido e revela a interface
+    [7] Fechar Database (miClose) -> encerra a conexao com o arquivo e oculta a interface
+    [8] Voltar SEM database -> devolve o estado vazio (so o menu); COM
+        database aberto -> a interface fica; "Fechar Database" volta a esconder
     [9] Nenhum crash registrado no log de eventos do Windows (WER)
 
   Sai com código 0 quando tudo passa, 1 quando há alguma falha.
@@ -322,6 +323,80 @@ function Wait-Warning([uint32]$ProcId) {
     [IntPtr]::Zero
 }
 
+# Espera a interface aparecer ($true) ou sumir ($false): miNew, miOpen e
+# miClose mudam a visibilidade em tempo real, entao o clique precisa de um
+# instante para agir. Devolve as janelas visiveis nesse momento.
+function Wait-Interface([IntPtr]$Main, [bool]$Esperado) {
+    $vis = @([UiTest]::Visible($Main))
+    for ($t = 0; ($t -lt 12) -and (($vis.Count -gt 0) -ne $Esperado); $t++) {
+        Start-Sleep -Milliseconds 250
+        $vis = @([UiTest]::Visible($Main))
+    }
+    return $vis
+}
+
+# Acha o painel da tbContas entre as janelas NOVAS (em relacao a $Base) e clica
+# em sbtnVoltarContas. Painel = janela de altura 50 MAIS BAIXA da tela: o
+# pnHeader tambem tem 50px, mas fica no topo (e o pnFooter some nessa aba).
+# Devolve o HWND do painel (Zero quando nao achou).
+function Invoke-VoltarContas([IntPtr]$Main, $Base) {
+    $atual = @([UiTest]::Visible($Main))
+    $novas = @($atual | Where-Object { $Base -notcontains $_ })
+    $alvo = [IntPtr]::Zero
+    $melhorTop = -1
+    $melhorW = -1
+    foreach ($n in $novas) {
+        if ($n -match '(\d+),(\d+) (\d+)x(\d+)$') {
+            $y = [int]$Matches[2]
+            $w = [int]$Matches[3]
+            $h = [int]$Matches[4]
+            if ($h -eq 50 -and (($y -gt $melhorTop) -or (($y -eq $melhorTop) -and ($w -gt $melhorW)))) {
+                $melhorTop = $y
+                $melhorW = $w
+                if ($n -match 'id=(\d+)') { $alvo = [IntPtr][int64]$Matches[1] }
+            }
+        }
+    }
+    if ($alvo -eq [IntPtr]::Zero) { return [IntPtr]::Zero }
+    # Centro do botao: Left=200 Top=8 79x30 dentro do painel -> (239,23).
+    [void][UiTest]::ClickOn($alvo, 239, 23)
+    return $alvo
+}
+
+# Um ciclo completo do botao "Voltar": tira o estado ATUAL, navega (miGerCon),
+# espera a interface aparecer, clica em sbtnVoltarContas e espera o painel da
+# aba sumir. Devolve:
+#   Inicio = estado capturado antes de navegar (base real desse ciclo)
+#   Novas  = janelas novas que a navegacao trouxe (0 = a tela nao abriu)
+#   Painel = HWND do painel onde ficou o botao (Zero = nao achou)
+#   Pos    = estado estabilizado ja com o clique aplicado (o CALLER avalia)
+function Invoke-CicloVoltar([IntPtr]$Main, [int]$MenuId) {
+    $inicio = @([UiTest]::Visible($Main))
+    [void][UiTest]::Msg($Main, 0x0111, [IntPtr]$MenuId, [IntPtr]::Zero)
+    $apos = $inicio
+    for ($t = 0; ($t -lt 20) -and (@($apos | Where-Object { $inicio -notcontains $_ }).Count -eq 0); $t++) {
+        Start-Sleep -Milliseconds 250
+        $apos = @([UiTest]::Visible($Main))
+    }
+    $novas = @($apos | Where-Object { $inicio -notcontains $_ })
+    $painel = Invoke-VoltarContas $Main $inicio
+    $pos = $apos
+    if ($painel -ne [IntPtr]::Zero) {
+        $idPainel = 'id=' + $painel
+        for ($t = 0; ($t -lt 20) -and (@($pos | Where-Object { $_ -like ('*' + $idPainel + '*') }).Count -gt 0); $t++) {
+            Start-Sleep -Milliseconds 250
+            $pos = @([UiTest]::Visible($Main))
+        }
+    }
+    Start-Sleep -Milliseconds 500   # assenta o layout antes de comparar
+    [pscustomobject]@{
+        Inicio = $inicio
+        Novas  = $novas.Count
+        Painel = $painel
+        Pos    = @([UiTest]::Visible($Main))
+    }
+}
+
 # ------------------------------------------------------------------
 Write-Output '============================================================'
 Write-Output ' ProjectMoney - verificacao de funcionamento'
@@ -473,6 +548,10 @@ try {
                 # qualquer erro em NewDatabase/Open deixa um MessageDlg na tela.
                 Check 'nenhum dialogo pendente (criacao/conexao)' (
                     [UiTest]::FindDialog([uint32]$pNovo.Id) -eq [IntPtr]::Zero)
+                # "Ao criar um database, os elementos da pagina aparecem".
+                $visNovo = @(Wait-Interface $mainNovo $true)
+                Check 'interface revelada apos o miNew' ($visNovo.Count -gt 0) (
+                    'janelas=' + $visNovo.Count)
             }
 
             $pNovo.Refresh()
@@ -540,6 +619,10 @@ try {
             }
             Check 'nenhum aviso pendente (conexao no .db valido)' (
                 $avisoOk -eq [IntPtr]::Zero) ('hwnd=' + $avisoOk)
+            # "Ao abrir um database existente, os elementos da pagina aparecem".
+            $visAbr = @(Wait-Interface $mainAbrir $true)
+            Check 'interface revelada apos o miOpen' ($visAbr.Count -gt 0) (
+                'janelas=' + $visAbr.Count)
             $pAbrir.Refresh()
             Check 'aplicacao permanece viva (sem crash)' (-not $pAbrir.HasExited)
         }
@@ -579,6 +662,11 @@ try {
             }
             $pAbrir.Refresh()
             Check 'aplicacao permanece viva apos rejeitar banks.db' (-not $pAbrir.HasExited)
+            # A rejeicao acontece ANTES de mexer na ligacao: a interface
+            # continua exatamente como estava (revelada pelo arquivo valido).
+            $visRec = @([UiTest]::Visible($mainAbrir))
+            Check 'interface permanece apos rejeitar banks.db' ($visRec.Count -gt 0) (
+                'janelas=' + $visRec.Count)
         }
 
         # O SQLite mantem o arquivo aberto enquanto a aplicacao vive: o hash
@@ -630,6 +718,9 @@ try {
             Check 'nenhum aviso pendente (conexao aberta)' (
                 $avisoF -eq [IntPtr]::Zero) ('hwnd=' + $avisoF)
             Check 'arquivo travado com a conexao aberta' (-not (Test-FileReadable $minewDb))
+            $visAb = @(Wait-Interface $mainFecha $true)
+            Check 'interface revelada ao abrir (miOpen)' ($visAb.Count -gt 0) (
+                'janelas=' + $visAb.Count)
         }
 
         # (b) "Fechar Database": conexao encerrada -> o arquivo volta a ser
@@ -642,6 +733,10 @@ try {
             Check 'nenhum dialogo apos fechar' (
                 [UiTest]::FindDialog([uint32]$pFecha.Id) -eq [IntPtr]::Zero)
             Check 'arquivo liberado (conexao encerrada)' (Test-FileReadable $minewDb)
+            # "Ao fechar o database, os elementos da pagina sao ocultados".
+            $visFec = @(Wait-Interface $mainFecha $false)
+            Check 'interface oculta apos o Fechar Database' ($visFec.Count -eq 0) (
+                'janelas=' + $visFec.Count)
             $pFecha.Refresh()
             Check 'aplicacao permanece viva ao fechar' (-not $pFecha.HasExited)
 
@@ -664,6 +759,9 @@ try {
                 Check 'dialogo fechou ao confirmar (reabrir)' (Wait-DialogClosed $dlgRe)
                 Start-Sleep -Milliseconds 750
                 Check 'arquivo travado de novo (reconectado)' (-not (Test-FileReadable $minewDb))
+                $visRe = @(Wait-Interface $mainFecha $true)
+                Check 'interface revelada apos reconectar' ($visRe.Count -gt 0) (
+                    'janelas=' + $visRe.Count)
             }
             $pFecha.Refresh()
             Check 'aplicacao permanece viva ao reconectar' (-not $pFecha.HasExited)
@@ -682,7 +780,7 @@ try {
     }
 
     # ------------------------------------------------ [8] miGerCon -> tbContas
-    Write-Banner '[8/9] Gerenciar Contas (miGerCon) -> abre tbContas e volta'
+    Write-Banner '[8/9] Voltar sem database -> estado vazio; com database -> fica'
     $pNav = $null
     # Mesma protecao do passo do miNew: excecao tem de virar FALHA.
     $ErrorActionPreference = 'Stop'
@@ -694,59 +792,103 @@ try {
         Check 'aplicacao abriu (janela principal)' ($mainNav -ne [IntPtr]::Zero)
 
         $baseNav = @([UiTest]::Visible($mainNav))
-        Check 'estado inicial mapeado' ($baseNav.Count -gt 0) ('janelas=' + $baseNav.Count)
+        # A aplicacao abre em branco (só o MainMenu): nao ha nenhuma janela
+        # filha visivel no estado inicial.
+        Check 'interface oculta na inicializacao (so o menu)' ($baseNav.Count -eq 0) (
+            'janelas=' + $baseNav.Count)
 
         $idCon = [UiTest]::MenuId($mainNav, 'Gerenciar Contas')
         Check 'item de menu "Gerenciar Contas" encontrado' ($idCon -gt 0) ('id=' + $idCon)
 
         if ($idCon -gt 0) {
-            # Clique no menu: mesmo caminho de um clique real (WM_COMMAND)
-            [void][UiTest]::Msg($mainNav, 0x0111, [IntPtr]$idCon, [IntPtr]::Zero)
-
-            # Espera a aba tbContas aparecer (grade, painel e navigator novos)
-            $navApos = $baseNav
-            for ($t = 0; ($t -lt 20) -and (@($navApos | Where-Object { $baseNav -notcontains $_ }).Count -eq 0); $t++) {
-                Start-Sleep -Milliseconds 250
-                $navApos = @([UiTest]::Visible($mainNav))
-            }
-            $novasNav = @($navApos | Where-Object { $baseNav -notcontains $_ })
-            Check 'tbContas abriu (novas janelas visiveis)' ($novasNav.Count -gt 0) ('novas=' + $novasNav.Count)
-
-            # O painel inferior (pnContas, altura 50) e onde mora o botao:
-            # dele tiramos o HWND (alvo do clique) e o rect (confirma o maior).
-            $painelId = [IntPtr]::Zero
-            $painelW = 0
-            $painelX = 0
-            $painelY = 0
-            foreach ($n in $novasNav) {
-                if ($n -match '(\d+),(\d+) (\d+)x(\d+)$') {
-                    $w = [int]$Matches[3]; $h = [int]$Matches[4]
-                    if ($h -eq 50 -and $w -gt $painelW) {
-                        $painelW = $w
-                        $painelX = [int]$Matches[1]
-                        $painelY = [int]$Matches[2]
-                        if ($n -match 'id=(\d+)') { $painelId = [IntPtr][int64]$Matches[1] }
-                    }
-                }
-            }
-            Check 'painel da aba tbContas localizado' ($painelId -ne [IntPtr]::Zero) (
-                'largura=' + $painelW + ' pos=' + $painelX + ',' + $painelY)
-
-            if ($painelId -ne [IntPtr]::Zero) {
-                # sbtnVoltarContas: Left=200 Top=8 79x30 dentro do painel ->
-                # centro em (239,23). O clique vai DIRETO para o HWND do painel
-                # (funciona mesmo com o form atras de outra janela).
-                $ondeNav = [UiTest]::ClickOn($painelId, 239, 23)
-                Check 'clique em sbtnVoltarContas' (-not $ondeNav.StartsWith('FALHA')) $ondeNav
-
-                for ($t = 0; ($t -lt 20) -and (@(Compare-Object $baseNav $navApos).Count -ne 0); $t++) {
+            # ---- (a) SEM database em aberto: navegar revela e o "Voltar"
+            # devolve o estado vazio. Dois ciclos = da para repetir.
+            for ($ciclo = 1; $ciclo -le 2; $ciclo++) {
+                $c = Invoke-CicloVoltar $mainNav $idCon
+                Check ('navegacao revelou a interface (ciclo ' + $ciclo + ')') (
+                    $c.Novas -gt 0) ('novas=' + $c.Novas)
+                Check ('painel da tbContas localizado (ciclo ' + $ciclo + ')') (
+                    $c.Painel -ne [IntPtr]::Zero)
+                $estado = $c.Pos
+                for ($t = 0; ($t -lt 20) -and (@(Compare-Object $baseNav $estado).Count -ne 0); $t++) {
                     Start-Sleep -Milliseconds 250
-                    $navApos = @([UiTest]::Visible($mainNav))
+                    $estado = @([UiTest]::Visible($mainNav))
                 }
-                $difNav = @(Compare-Object $baseNav $navApos)
+                $dif = @(Compare-Object $baseNav $estado)
                 # No falha, o detalhe diz o que ainda difere (=> surgiu, <= sumiu).
-                Check 'sbtnVoltarContas devolveu o estado anterior' ($difNav.Count -eq 0) (
-                    (($difNav | ForEach-Object { $_.SideIndicator + ' ' + $_.InputObject }) -join ' // '))
+                Check ('Voltar sem database devolveu ao estado vazio (ciclo ' + $ciclo + ')') (
+                    $dif.Count -eq 0) (
+                    (($dif | ForEach-Object { $_.SideIndicator + ' ' + $_.InputObject }) -join ' // '))
+            }
+
+            # ---- (b) COM database aberto: o "Voltar" NAO pode esconder nada.
+            Check 'miNew-test.db do passo [5] disponivel' (Test-Path $minewDb)
+            $dlgAb = Invoke-MenuFileDialog $pNav 'Abrir Database'
+            Check 'dialogo "Abrir Database" abriu' ($dlgAb -ne [IntPtr]::Zero)
+            if ($dlgAb -ne [IntPtr]::Zero) {
+                $editAb = Set-FileDialogName $dlgAb $minewDb
+                Check 'campo de nome do arquivo encontrado' ($editAb -ne [IntPtr]::Zero)
+                Check 'dialogo fechou ao confirmar' (Wait-DialogClosed $dlgAb)
+                # a conexao e aberta depois que o dialogo some: espera o aviso
+                $avisoAb = [IntPtr]::Zero
+                for ($t = 0; ($t -lt 12) -and ($avisoAb -eq [IntPtr]::Zero); $t++) {
+                    Start-Sleep -Milliseconds 250
+                    $avisoAb = [UiTest]::FindDialog([uint32]$pNav.Id)
+                }
+                Check 'database aberto sem aviso' ($avisoAb -eq [IntPtr]::Zero) ('hwnd=' + $avisoAb)
+            }
+
+            # Abrir ja levanta a interface: nao precisa navegar para ve-la.
+            $visAb8 = @(Wait-Interface $mainNav $true)
+            Check 'interface revelada apos o miOpen (sem navegar)' (
+                $visAb8.Count -gt 0) ('janelas=' + $visAb8.Count)
+
+            $cCom = Invoke-CicloVoltar $mainNav $idCon
+            Check 'navegacao revelou a interface (com database)' ($cCom.Novas -gt 0) (
+                'novas=' + $cCom.Novas)
+            Check 'painel da tbContas localizado (com database)' (
+                $cCom.Painel -ne [IntPtr]::Zero)
+            # Rodape e "Anterior:" so existem na tela de extratos com a
+            # interface inteira levantada: e a prova de que NADA foi escondido.
+            $estCom = $cCom.Pos
+            for ($t = 0; ($t -lt 20) -and (@($estCom | Where-Object { $_ -like '*"Show Controls"*' }).Count -eq 0); $t++) {
+                Start-Sleep -Milliseconds 250
+                $estCom = @([UiTest]::Visible($mainNav))
+            }
+            Check 'Voltar com database mantem a interface visivel' (
+                ($estCom.Count -gt 0) -and
+                (@($estCom | Where-Object { $_ -like '*"Show Controls"*' }).Count -gt 0) -and
+                (@($estCom | Where-Object { $_ -like '*"Anterior:"*' }).Count -gt 0)) (
+                'janelas=' + $estCom.Count)
+
+            # ---- (c) "Fechar Database" zera a regra: volta a esconder.
+            $idFecha = [UiTest]::MenuId($mainNav, 'Fechar Database')
+            Check 'item de menu "Fechar Database" encontrado' ($idFecha -gt 0) ('id=' + $idFecha)
+            if ($idFecha -gt 0) {
+                [void][UiTest]::Msg($mainNav, 0x0111, [IntPtr]$idFecha, [IntPtr]::Zero)
+                Start-Sleep -Milliseconds 800
+                Check 'nenhum dialogo ao fechar' (
+                    [UiTest]::FindDialog([uint32]$pNav.Id) -eq [IntPtr]::Zero)
+
+                # "Ao fechar o database, os elementos da pagina sao ocultados":
+                # daqui pra baixo o ciclo comeca do estado vazio de novo.
+                $visFec8 = @(Wait-Interface $mainNav $false)
+                Check 'interface oculta apos o Fechar Database' ($visFec8.Count -eq 0) (
+                    'janelas=' + $visFec8.Count)
+
+                $cFec = Invoke-CicloVoltar $mainNav $idCon
+                Check 'navegacao revelou a interface (apos o fechar)' ($cFec.Novas -gt 0) (
+                    'novas=' + $cFec.Novas)
+                Check 'painel da tbContas localizado (apos o fechar)' (
+                    $cFec.Painel -ne [IntPtr]::Zero)
+                $estFec = $cFec.Pos
+                for ($t = 0; ($t -lt 20) -and (@(Compare-Object $baseNav $estFec).Count -ne 0); $t++) {
+                    Start-Sleep -Milliseconds 250
+                    $estFec = @([UiTest]::Visible($mainNav))
+                }
+                $difFec = @(Compare-Object $baseNav $estFec)
+                Check 'Voltar apos o Fechar Database volta a esconder' ($difFec.Count -eq 0) (
+                    (($difFec | ForEach-Object { $_.SideIndicator + ' ' + $_.InputObject }) -join ' // '))
             }
         }
 
