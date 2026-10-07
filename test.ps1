@@ -14,8 +14,9 @@
     [4] Sem sqlite3.dll -> erro tratado com diálogo (sem crash, sem arquivo parcial)
     [5] Novo Database (miNew) -> cria um .db com as tabelas contas/extratos/saldos
     [6] Abrir Database (miOpen) -> abre o .db valido e rejeita arquivo invalido
-    [7] Gerenciar Contas (miGerCon) -> abre tbContas e o "Voltar" devolve o estado
-    [8] Nenhum crash registrado no log de eventos do Windows (WER)
+    [7] Fechar Database (miClose) -> encerra a conexao com o arquivo de contas
+    [8] Gerenciar Contas (miGerCon) -> abre tbContas e o "Voltar" devolve o estado
+    [9] Nenhum crash registrado no log de eventos do Windows (WER)
 
   Sai com código 0 quando tudo passa, 1 quando há alguma falha.
   As mensagens "arquivo(linha,col) severidade: mensagem" alimentam o
@@ -243,6 +244,17 @@ function Get-Hash([string]$Path) {
     (Get-FileHash -Path $Path -Algorithm SHA256).Hash
 }
 
+# Le o arquivo: so' funciona com a conexao ENCERRADA, porque o SQLite mantem
+# o arquivo travado enquanto a query da tbContas estiver aberta. E a prova
+# observavel (sem tocar na interface) de que o miClose fez o trabalho.
+function Test-FileReadable([string]$Path) {
+    try {
+        $null = [IO.File]::ReadAllBytes($Path)
+        $true
+    }
+    catch { $false }
+}
+
 function Get-AppCrashes([datetime]$Since) {
     try {
         @(Get-WinEvent -FilterHashtable @{ LogName = 'Application'; Id = 1000; StartTime = $Since } -ErrorAction Stop |
@@ -327,7 +339,7 @@ if ($dbExisted) {
 
 try {
     # ------------------------------------------------ [1] compilação/lint
-    Write-Banner '[1/8] Compilacao e lint (lazbuild -B)'
+    Write-Banner '[1/9] Compilacao e lint (lazbuild -B)'
     if ($SkipLint) {
         Write-Output '   (pulado por -SkipLint)'
     }
@@ -350,7 +362,7 @@ try {
     Check 'sqlite3.dll existe' (Test-Path $dll)
 
     # ------------------------------------------------ [2] cria o banco
-    Write-Banner '[2/8] Sem banks.db -> deve criar o arquivo'
+    Write-Banner '[2/9] Sem banks.db -> deve criar o arquivo'
     if (Test-Path $db) { Remove-Item $db -Force }
     $r = Invoke-App $RunSeconds
     Test-NoCrash $r 'aplicacao permanece viva (sem crash)'
@@ -364,7 +376,7 @@ try {
     }
 
     # ------------------------------------------------ [3] já existe
-    Write-Banner '[3/8] Com banks.db -> nao deve recriar nem alterar'
+    Write-Banner '[3/9] Com banks.db -> nao deve recriar nem alterar'
     if (Test-Path $db) {
         $hashBefore = Get-Hash $db
         $r = Invoke-App $RunSeconds
@@ -376,7 +388,7 @@ try {
     }
 
     # ------------------------------------------------ [4] DLL ausente
-    Write-Banner '[4/8] Sem sqlite3.dll -> erro deve ser tratado'
+    Write-Banner '[4/9] Sem sqlite3.dll -> erro deve ser tratado'
     if ($SkipDllTest) {
         Write-Output '   (pulado por -SkipDllTest)'
     }
@@ -405,7 +417,7 @@ try {
     }
 
     # ------------------------------------------------ [5] miNew -> database
-    Write-Banner '[5/8] Novo Database (miNew) -> cria .db com as 3 tabelas'
+    Write-Banner '[5/9] Novo Database (miNew) -> cria .db com as 3 tabelas'
     if (Test-Path $minewDb) { Remove-Item $minewDb -Force -ErrorAction SilentlyContinue }
     $pNovo = $null
     # Qualquer excecao no fluxo tem de virar FALHA: se escapasse em silencio,
@@ -492,7 +504,7 @@ try {
     }
 
     # ------------------------------------------------ [6] miOpen -> abrir .db
-    Write-Banner '[6/8] Abrir Database (miOpen) -> abre o valido e rejeita o invalido'
+    Write-Banner '[6/9] Abrir Database (miOpen) -> abre o valido e rejeita o invalido'
     $pAbrir  = $null
     $hashAbr = $null
     # O passo [4] apaga banks.db e ele so' e recriado no passo final: garante o
@@ -589,8 +601,88 @@ try {
         Check 'hash de banks.db comparado antes/depois' $false 'arquivo ausente'
     }
 
-    # ------------------------------------------------ [7] miGerCon -> tbContas
-    Write-Banner '[7/8] Gerenciar Contas (miGerCon) -> abre tbContas e volta'
+    # ------------------------------------------------ [7] miClose -> fechar
+    Write-Banner '[7/9] Fechar Database (miClose) -> encerra a conexao com o arquivo'
+    $pFecha = $null
+    # Mesma protecao dos passos de interface: excecao tem de virar FALHA.
+    $ErrorActionPreference = 'Stop'
+    try {
+        $pFecha = Start-Process -FilePath $exe -WorkingDirectory $root -PassThru
+        Start-Sleep -Seconds 3
+        $pFecha.Refresh()
+        $mainFecha = $pFecha.MainWindowHandle
+        Check 'aplicacao abriu (janela principal)' ($mainFecha -ne [IntPtr]::Zero)
+        Check 'miNew-test.db dos passos anteriores disponivel' (Test-Path $minewDb)
+
+        # (a) abre o database de contas: sem conexao nao ha nada para fechar
+        $dlgF = Invoke-MenuFileDialog $pFecha 'Abrir Database'
+        Check 'dialogo "Abrir" abriu' ($dlgF -ne [IntPtr]::Zero)
+        if ($dlgF -ne [IntPtr]::Zero) {
+            $editF = Set-FileDialogName $dlgF $minewDb
+            Check 'campo de nome do arquivo encontrado' ($editF -ne [IntPtr]::Zero)
+            Check 'dialogo fechou ao confirmar' (Wait-DialogClosed $dlgF)
+            # a conexao e aberta depois que o dialogo some: espera o aviso
+            $avisoF = [IntPtr]::Zero
+            for ($t = 0; ($t -lt 12) -and ($avisoF -eq [IntPtr]::Zero); $t++) {
+                Start-Sleep -Milliseconds 250
+                $avisoF = [UiTest]::FindDialog([uint32]$pFecha.Id)
+            }
+            Check 'nenhum aviso pendente (conexao aberta)' (
+                $avisoF -eq [IntPtr]::Zero) ('hwnd=' + $avisoF)
+            Check 'arquivo travado com a conexao aberta' (-not (Test-FileReadable $minewDb))
+        }
+
+        # (b) "Fechar Database": conexao encerrada -> o arquivo volta a ser
+        # legivel mesmo com a aplicacao viva (e nada de dialogo de erro).
+        $idFecha = [UiTest]::MenuId($mainFecha, 'Fechar Database')
+        Check 'item de menu "Fechar Database" encontrado' ($idFecha -gt 0) ('id=' + $idFecha)
+        if ($idFecha -gt 0) {
+            [void][UiTest]::Msg($mainFecha, 0x0111, [IntPtr]$idFecha, [IntPtr]::Zero)
+            Start-Sleep -Milliseconds 1000
+            Check 'nenhum dialogo apos fechar' (
+                [UiTest]::FindDialog([uint32]$pFecha.Id) -eq [IntPtr]::Zero)
+            Check 'arquivo liberado (conexao encerrada)' (Test-FileReadable $minewDb)
+            $pFecha.Refresh()
+            Check 'aplicacao permanece viva ao fechar' (-not $pFecha.HasExited)
+
+            # fechar de novo e' no-op: nao pode quebrar nem abrir dialogo
+            [void][UiTest]::Msg($mainFecha, 0x0111, [IntPtr]$idFecha, [IntPtr]::Zero)
+            Start-Sleep -Milliseconds 600
+            Check 'segundo fechar tambem sem dialogo' (
+                [UiTest]::FindDialog([uint32]$pFecha.Id) -eq [IntPtr]::Zero)
+            Check 'arquivo continua liberado apos o 2o fechar' (Test-FileReadable $minewDb)
+            $pFecha.Refresh()
+            Check 'aplicacao permanece viva (sem crash)' (-not $pFecha.HasExited)
+
+            # (c) reabrir depois de fechar: tem de voltar a conectar
+            $dlgRe = Invoke-MenuFileDialog $pFecha 'Abrir Database'
+            Check 'dialogo "Abrir" reabriu' ($dlgRe -ne [IntPtr]::Zero)
+            if ($dlgRe -ne [IntPtr]::Zero) {
+                $editRe = Set-FileDialogName $dlgRe $minewDb
+                Check 'campo de nome do arquivo encontrado (reabrir)' (
+                    $editRe -ne [IntPtr]::Zero)
+                Check 'dialogo fechou ao confirmar (reabrir)' (Wait-DialogClosed $dlgRe)
+                Start-Sleep -Milliseconds 750
+                Check 'arquivo travado de novo (reconectado)' (-not (Test-FileReadable $minewDb))
+            }
+            $pFecha.Refresh()
+            Check 'aplicacao permanece viva ao reconectar' (-not $pFecha.HasExited)
+        }
+
+        try { $pFecha.Kill(); $pFecha.WaitForExit() } catch { }
+    }
+    catch {
+        Check 'fluxo do miClose sem excecao' $false $_.Exception.Message
+    }
+    finally {
+        $ErrorActionPreference = 'Continue'
+        if ($pFecha -and -not $pFecha.HasExited) {
+            try { $pFecha.Kill(); $pFecha.WaitForExit() } catch { }
+        }
+    }
+
+    # ------------------------------------------------ [8] miGerCon -> tbContas
+    Write-Banner '[8/9] Gerenciar Contas (miGerCon) -> abre tbContas e volta'
     $pNav = $null
     # Mesma protecao do passo do miNew: excecao tem de virar FALHA.
     $ErrorActionPreference = 'Stop'
@@ -671,8 +763,8 @@ try {
         }
     }
 
-    # ------------------------------------------------ [8] estado final + WER
-    Write-Banner '[8/8] Estado final e log de crashes do Windows'
+    # ------------------------------------------------ [9] estado final + WER
+    Write-Banner '[9/9] Estado final e log de crashes do Windows'
     if (-not (Test-Path $db)) {
         $null = Invoke-App $RunSeconds   # recria o banco para deixar o ambiente utilizavel
     }

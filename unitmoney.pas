@@ -87,6 +87,7 @@ type
     tslblAnterior: TStaticText;
     txtSaldo: TLabel;
     procedure FormCreate(Sender: TObject);
+    procedure miCloseClick(Sender: TObject);
     procedure miGerConClick(Sender: TObject);
     procedure miListClick(Sender: TObject);
     procedure miNewClick(Sender: TObject);
@@ -201,6 +202,22 @@ begin
   PageControl1.ActivePage := ATab;
   for i := 0 to PageControl1.PageCount - 1 do
     PageControl1.Pages[i].TabVisible := False;
+end;
+
+procedure TFormMoney.miCloseClick(Sender: TObject);
+begin
+  // "Fechar Database" encerra a ligação com o arquivo de contas (o mesmo que
+  // "Novo Database"/"Abrir Database" trocam de lugar). O banks.db não é
+  // afetado: ele abre na inicialização e sustenta a lista de bancos.
+  // Sempre dá para fechar duas vezes: fechar algo já fechado é só no-op.
+  try
+    SQLQueryContas.Close;
+    SQLite3ConnContas.Close;
+  except
+    on E: Exception do
+      MessageDlg('Não foi possível fechar o database.' + LineEnding + E.Message,
+        mtError, [mbOK], 0);
+  end;
 end;
 
 procedure TFormMoney.miGerConClick(Sender: TObject);

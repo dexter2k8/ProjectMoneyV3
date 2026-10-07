@@ -411,6 +411,7 @@ object FormMoney: TFormMoney
       end
       object miClose: TMenuItem
         Caption = 'Fechar Database'
+        OnClick = miCloseClick
       end
       object miList: TMenuItem
         Caption = 'Lista de Bancos'
