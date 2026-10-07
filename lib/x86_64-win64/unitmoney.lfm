@@ -132,14 +132,15 @@ object FormMoney: TFormMoney
     Height = 472
     Top = 50
     Width = 860
-    ActivePage = tbJan
+    ActivePage = tbBancos
     Align = alClient
     Options = [nboDoChangeOnSetIndex]
-    OnChange = PageControl1Change
-    TabIndex = 0
+    TabIndex = 12
     TabOrder = 2
+    OnChange = PageControl1Change
     object tbJan: TTabSheet
       Caption = 'JAN'
+      TabVisible = False
     end
     object tbFev: TTabSheet
       Caption = 'FEV'
@@ -252,6 +253,7 @@ object FormMoney: TFormMoney
       Caption = 'Saldos'
       ClientHeight = 444
       ClientWidth = 852
+      TabVisible = False
       object gridSaldos: TDBGrid
         Left = 0
         Height = 394
@@ -288,6 +290,67 @@ object FormMoney: TFormMoney
           ClientWidth = 425
           Options = []
           TabOrder = 0
+        end
+      end
+    end
+    object tbContas: TTabSheet
+      Caption = 'Contas'
+      ClientHeight = 444
+      ClientWidth = 852
+      TabVisible = False
+      object gridContas: TDBGrid
+        Left = 200
+        Height = 394
+        Top = 0
+        Width = 452
+        Align = alClient
+        AutoFillColumns = True
+        BorderSpacing.Left = 200
+        BorderSpacing.Right = 200
+        Color = clWindow
+        Columns = <>
+        Options = [dgEditing, dgTitles, dgIndicator, dgColumnResize, dgColumnMove, dgColLines, dgRowLines, dgTabs, dgAlwaysShowSelection, dgConfirmDelete, dgCancelOnExit, dgDisplayMemoText]
+        TabOrder = 0
+      end
+      object pnContas: TPanel
+        Left = 0
+        Height = 50
+        Top = 394
+        Width = 852
+        Align = alBottom
+        ClientHeight = 50
+        ClientWidth = 852
+        TabOrder = 1
+        object DBNavContas: TDBNavigator
+          Left = 288
+          Height = 32
+          Top = 8
+          Width = 359
+          Anchors = [akTop, akBottom]
+          BevelOuter = bvNone
+          ChildSizing.EnlargeHorizontal = crsScaleChilds
+          ChildSizing.EnlargeVertical = crsScaleChilds
+          ChildSizing.ShrinkHorizontal = crsScaleChilds
+          ChildSizing.ShrinkVertical = crsScaleChilds
+          ChildSizing.Layout = cclLeftToRightThenTopToBottom
+          ChildSizing.ControlsPerLine = 100
+          ClientHeight = 32
+          ClientWidth = 359
+          Options = []
+          TabOrder = 0
+        end
+        object sbtnVoltarContas: TSpeedButton
+          Left = 200
+          Height = 30
+          Top = 8
+          Width = 79
+          Caption = '←    Voltar'
+          Font.CharSet = ANSI_CHARSET
+          Font.Height = -13
+          Font.Pitch = fpVariable
+          Font.Quality = fqDraft
+          ParentFont = False
+          OnClick = sbtnVoltarClick
         end
       end
     end

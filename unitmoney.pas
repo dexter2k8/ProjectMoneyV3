@@ -16,8 +16,10 @@ type
     cbYear: TComboBox;
     cbAccount: TComboBox;
     DBNavBancos: TDBNavigator;
+    DBNavContas: TDBNavigator;
     DBNavTrans: TDBNavigator;
     DBNavSaldos: TDBNavigator;
+    gridContas: TDBGrid;
     gridSaldos: TDBGrid;
     gridTrans: TDBGrid;
     gridBancos: TDBGrid;
@@ -41,9 +43,11 @@ type
     mmArquivo: TMenuItem;
     PageControl1: TPageControl;
     pnBancosControl: TPanel;
+    pnContas: TPanel;
     pnSaldosControl: TPanel;
     pnHeader: TPanel;
     pnFooter: TPanel;
+    sbtnVoltarContas: TSpeedButton;
     Separator1: TMenuItem;
     Separator2: TMenuItem;
     Separator3: TMenuItem;
@@ -53,6 +57,7 @@ type
     SQLTransactionBancos: TSQLTransaction;
     SQLQueryBanks: TSQLQuery;
     DataSourceBancos: TDataSource;
+    tbContas: TTabSheet;
     toggleShowControls: TToggleBox;
     tsAnterior: TStaticText;
     tbSaldos: TTabSheet;
@@ -113,9 +118,15 @@ begin
       MessageDlg('Não foi possível carregar os dados de "' + DatabaseFileName +
         '".' + LineEnding + E.Message, mtError, [mbOK], 0);
   end;
-  // O form já nasce com tbJan ativa e, durante o streaming, o OnChange não
-  // dispara (csLoading): aplica a regra da lista de bancos aqui.
+  // Captura o título ANTES de qualquer OnChange: a troca de página usa
+  // FSavedTitle para restaurar lblTitle.
   FSavedTitle := lblTitle.Caption;
+  // ActivePage no .lfm é apenas a página que estava selecionada no designer e
+  // muda a cada salvamento (já foi tbJan, tbSaldos e tbBancos). Fixando aqui a
+  // tela de entrada, a aplicação nunca inicializa na lista de bancos.
+  PageControl1.ActivePage := tbJan;
+  // Durante o streaming o OnChange não dispara (csLoading): aplica a regra da
+  // lista de bancos aqui também (é idempotente).
   PageControl1Change(nil);
 end;
 
