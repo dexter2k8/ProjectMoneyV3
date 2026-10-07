@@ -16,8 +16,9 @@ procedure EnsureDatabase;
 // Devolve False (com diálogo de erro) quando não consegue; nesse caso remove
 // o arquivo incompleto. Se já existir, é substituído: quem confirma é o chamador.
 function NewDatabase(const AFileName: string): Boolean;
-// Confere se AFileName é um database do ProjectMoney para a aba tbContas:
-// abre como SQLite e tem a tabela "contas" (a única que a query da aba lê).
+// Confere se AFileName é um database do ProjectMoney: abre como SQLite e tem
+// as tabelas "contas" (aba tbContas) e "saldos" (aba tbSaldos) — as duas que
+// as queries da interface ligam ao arquivo.
 // Não cria nem altera arquivo e não mostra diálogo — False também para arquivo
 // inexistente/quebrado, e quem avisa o usuário é o chamador.
 function IsAccountsDatabase(const AFileName: string): Boolean;
@@ -187,12 +188,14 @@ begin
       Trans.Active := True;
       Query.Database := Conn;
       Query.Transaction := Trans;
-      // O sqlite_master guarda o SQL original de cada tabela: procurar por
-      // "contas" ali aceita qualquer formatação do CREATE TABLE.
-      Query.SQL.Text := 'SELECT name FROM sqlite_master' +
-        ' WHERE type = ''table'' AND name = ''contas'';';
+      // O sqlite_master guarda cada tabela: procurar pelos nomes ali aceita
+      // qualquer formatação do CREATE TABLE. As DUAS tabelas que as queries
+      // da interface ligam têm de existir ("contas" na tbContas e "saldos"
+      // na tbSaldos), senão o arquivo não serve para a aplicação.
+      Query.SQL.Text := 'SELECT COUNT(*) FROM sqlite_master' +
+        ' WHERE type = ''table'' AND name IN (''contas'', ''saldos'');';
       Query.Open;
-      Result := not Query.EOF;
+      Result := Query.Fields[0].AsInteger = 2;
       Query.Close;
     except
       // Arquivo que não é SQLite (ou está quebrado) estoura aqui.

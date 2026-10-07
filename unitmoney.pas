@@ -49,6 +49,7 @@ type
     pnHeader: TPanel;
     pnFooter: TPanel;
     sbtnVoltarContas: TSpeedButton;
+    sbtnVoltarSaldos: TSpeedButton;
     Separator1: TMenuItem;
     Separator2: TMenuItem;
     Separator3: TMenuItem;
@@ -67,6 +68,8 @@ type
     SQLTransactionContas: TSQLTransaction;
     SQLQueryContas: TSQLQuery;
     DataSourceContas: TDataSource;
+    SQLQuerySaldos: TSQLQuery;
+    DataSourceSaldos: TDataSource;
     tbContas: TTabSheet;
     toggleShowControls: TToggleBox;
     tsAnterior: TStaticText;
@@ -89,6 +92,7 @@ type
     procedure FormCreate(Sender: TObject);
     procedure miCloseClick(Sender: TObject);
     procedure miGerConClick(Sender: TObject);
+    procedure miGerSalClick(Sender: TObject);
     procedure miListClick(Sender: TObject);
     procedure miNewClick(Sender: TObject);
     procedure miOpenClick(Sender: TObject);
@@ -166,13 +170,16 @@ procedure TFormMoney.PageControl1Change(Sender: TObject);
 var
   exibindoBancos: Boolean;
   exibindoContas: Boolean;
+  exibindoSaldos: Boolean;
   exibindoExtrato: Boolean;
 begin
   exibindoBancos := (PageControl1.ActivePage = tbBancos);
   exibindoContas := (PageControl1.ActivePage = tbContas);
-  // Rodapé e textos "Anterior" são da tela de extratos: somem na lista de
-  // bancos E na aba de contas (mesma regra para as duas).
-  exibindoExtrato := not exibindoBancos and not exibindoContas;
+  exibindoSaldos := (PageControl1.ActivePage = tbSaldos);
+  // Rodapé e textos "Anterior" são da tela de extratos: somem nas três telas
+  // de gestão (lista de bancos, contas e saldos) — mesma regra para todas.
+  exibindoExtrato := not exibindoBancos and not exibindoContas and
+    not exibindoSaldos;
 
   // O painel inteiro some (e não só os itens): como PageControl1 é alClient,
   // os 50px do rodapé são realinhados para a guia ativa e a grade cresce.
@@ -181,8 +188,8 @@ begin
   // quando o painel voltar, o navegador respeitar o toggle.
   DBNavTrans.Visible := exibindoExtrato and toggleShowControls.Checked;
 
-  // Combos do cabeçalho: somem nas duas telas de gestão (lista de bancos e
-  // gerenciamento de contas), junto com os textos "Anterior".
+  // Combos do cabeçalho: somem nas três telas de gestão (lista de bancos,
+  // contas e saldos), junto com os textos "Anterior".
   cbYear.Visible := exibindoExtrato;
   cbAccount.Visible := exibindoExtrato;
   tsAnterior.Visible := exibindoExtrato;
@@ -195,6 +202,8 @@ begin
     lblTitle.Caption := 'Lista de Bancos'
   else if exibindoContas then
     lblTitle.Caption := 'Gerenciamento de Contas'
+  else if exibindoSaldos then
+    lblTitle.Caption := 'Gerenciamento de Saldos'
   else
     lblTitle.Caption := FSavedTitle;
 end;
@@ -270,6 +279,7 @@ begin
   // Sempre dá para fechar duas vezes: fechar algo já fechado é só no-op.
   try
     SQLQueryContas.Close;
+    SQLQuerySaldos.Close;
     SQLite3ConnContas.Close;
   except
     on E: Exception do
@@ -284,6 +294,13 @@ end;
 procedure TFormMoney.miGerConClick(Sender: TObject);
 begin
   NavigateToTab(tbContas);
+end;
+
+procedure TFormMoney.miGerSalClick(Sender: TObject);
+begin
+  // Mesmo caminho do "Gerenciar Contas": a página fica atrás do próprio
+  // "Voltar" do painel inferior e o título vira "Gerenciamento de Saldos".
+  NavigateToTab(tbSaldos);
 end;
 
 procedure TFormMoney.miListClick(Sender: TObject);
@@ -332,13 +349,16 @@ begin
   if not NewDatabase(novoArquivo) then
     Exit;
 
-  // Mesma lógica da aba tbBancos: abrir a query faz a grade e o navigator
-  // da aba tbContas passarem a enxergar a tabela "contas".
+  // Mesma lógica da aba tbBancos: abrir as queries faz a grade e o navigator
+  // das abas tbContas/tbSaldos passarem a enxergar as tabelas "contas" e
+  // "saldos" (as duas moram no mesmo database, na mesma conexão).
   try
     SQLQueryContas.Close;
+    SQLQuerySaldos.Close;
     SQLite3ConnContas.Close;
     SQLite3ConnContas.DatabaseName := novoArquivo;
     SQLQueryContas.Open;
+    SQLQuerySaldos.Open;
   except
     on E: Exception do
       MessageDlg('O database "' + ExtractFileName(novoArquivo) +
@@ -379,19 +399,23 @@ begin
   if not IsAccountsDatabase(abrirArquivo) then
   begin
     MessageDlg('"' + ExtractFileName(abrirArquivo) +
-      '" não é um database de contas (falta a tabela "contas").' + LineEnding +
+      '" não é um database de contas (falta a tabela "contas" ou "saldos").' +
+      LineEnding +
       'Crie um com o menu "Novo Database" ou escolha outro arquivo.',
       mtError, [mbOK], 0);
     Exit;
   end;
 
   // Mesma ligação do "Novo Database": fecha o que estiver aberto, aponta a
-  // conexão para o arquivo escolhido e reabre a query da tbContas.
+  // conexão para o arquivo escolhido e reabre as queries da tbContas e da
+  // tbSaldos (uma ligação só para as duas tabelas).
   try
     SQLQueryContas.Close;
+    SQLQuerySaldos.Close;
     SQLite3ConnContas.Close;
     SQLite3ConnContas.DatabaseName := abrirArquivo;
     SQLQueryContas.Open;
+    SQLQuerySaldos.Open;
   except
     on E: Exception do
       MessageDlg('Não foi possível abrir o database "' +

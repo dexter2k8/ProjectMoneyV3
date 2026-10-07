@@ -259,8 +259,11 @@ object FormMoney: TFormMoney
         Top = 0
         Width = 852
         Align = alClient
+        AutoFillColumns = True
         Color = clWindow
         Columns = <>
+        DataSource = DataSourceSaldos
+        Options = [dgEditing, dgTitles, dgIndicator, dgColumnResize, dgColumnMove, dgColLines, dgRowLines, dgTabs, dgAlwaysShowSelection, dgConfirmDelete, dgCancelOnExit, dgDisplayMemoText]
         TabOrder = 0
       end
       object pnSaldosControl: TPanel
@@ -273,10 +276,10 @@ object FormMoney: TFormMoney
         ClientWidth = 852
         TabOrder = 1
         object DBNavSaldos: TDBNavigator
-          Left = 214
-          Height = 48
-          Top = 0
-          Width = 425
+          Left = 288
+          Height = 32
+          Top = 8
+          Width = 359
           Anchors = [akTop, akBottom]
           BevelOuter = bvNone
           ChildSizing.EnlargeHorizontal = crsScaleChilds
@@ -285,10 +288,24 @@ object FormMoney: TFormMoney
           ChildSizing.ShrinkVertical = crsScaleChilds
           ChildSizing.Layout = cclLeftToRightThenTopToBottom
           ChildSizing.ControlsPerLine = 100
-          ClientHeight = 48
-          ClientWidth = 425
+          ClientHeight = 32
+          ClientWidth = 359
+          DataSource = DataSourceSaldos
           Options = []
           TabOrder = 0
+        end
+        object sbtnVoltarSaldos: TSpeedButton
+          Left = 200
+          Height = 30
+          Top = 8
+          Width = 79
+          Caption = '←    Voltar'
+          Font.CharSet = ANSI_CHARSET
+          Font.Height = -13
+          Font.Pitch = fpVariable
+          Font.Quality = fqDraft
+          ParentFont = False
+          OnClick = sbtnVoltarClick
         end
       end
     end
@@ -451,6 +468,7 @@ object FormMoney: TFormMoney
       end
       object miGerSal: TMenuItem
         Caption = 'Gerenciar Saldos'
+        OnClick = miGerSalClick
       end
       object miGerCon: TMenuItem
         Caption = 'Gerenciar Contas'
@@ -548,6 +566,26 @@ object FormMoney: TFormMoney
   object DataSourceContas: TDataSource
     DataSet = SQLQueryContas
     Left = 72
+    Top = 400
+  end
+  object SQLQuerySaldos: TSQLQuery
+    PacketRecords = -1
+    FieldDefs = <>
+    Database = SQLite3ConnContas
+    Transaction = SQLTransactionContas
+    SQL.Strings = (
+      'SELECT * FROM saldos;'
+      ''
+    )
+    Options = [sqoKeepOpenOnCommit, sqoAutoApplyUpdates, sqoAutoCommit]
+    Params = <>
+    Macros = <>
+    Left = 120
+    Top = 344
+  end
+  object DataSourceSaldos: TDataSource
+    DataSet = SQLQuerySaldos
+    Left = 120
     Top = 400
   end
 end

@@ -16,7 +16,8 @@
     [6] Abrir Database (miOpen) -> abre o .db valido, rejeita arquivo invalido e revela a interface
     [7] Fechar Database (miClose) -> encerra a conexao com o arquivo e oculta a interface
     [8] Voltar SEM database -> devolve o estado vazio (so o menu); COM
-        database aberto -> a interface fica; "Fechar Database" volta a esconder
+        database aberto -> a interface fica (tbContas e tbSaldos ligadas as
+        tabelas); "Fechar Database" volta a esconder
     [9] Nenhum crash registrado no log de eventos do Windows (WER)
 
   Sai com código 0 quando tudo passa, 1 quando há alguma falha.
@@ -74,8 +75,14 @@ public class UiTest {
     [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
     [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+    [DllImport("user32.dll")] static extern bool GetScrollInfo(IntPtr h, int bar, ref SCROLLINFO s);
 
     [StructLayout(LayoutKind.Sequential)] public struct RECT { public int left, top, right, bottom; }
+    [StructLayout(LayoutKind.Sequential)]
+    public struct SCROLLINFO {
+        public int cbSize; public uint fMask;
+        public int nMin; public int nMax; public uint nPage; public int nPos; public int nTrackPos;
+    }
 
     public static IntPtr Msg(IntPtr h, uint m, IntPtr w, IntPtr l) {
         IntPtr r; SendMessageTimeout(h, m, w, l, 2, 3000, out r); return r;
@@ -188,6 +195,18 @@ public class UiTest {
         }
         return -1;
     }
+    // nMax da barra de rolagem vertical (-1 = janela sem barra). No TDBGrid o
+    // LCL usa a barra NATIVA do Windows, entao o nMax e' o total de linhas
+    // que a grade mostra - e' assim que a suite enxerga a tabela ligada a
+    // grade (sem depender do desenho das celulas, que nao viram janela).
+    public static int VScrollMax(IntPtr h) {
+        SCROLLINFO s;
+        s.cbSize = Marshal.SizeOf(typeof(SCROLLINFO));
+        s.fMask = 0x0017;             // SIF_RANGE|SIF_PAGE|SIF_POS|SIF_TRACKPOS
+        s.nMin = 0; s.nMax = 0; s.nPage = 0; s.nPos = 0; s.nTrackPos = 0;
+        if (!GetScrollInfo(h, 1, ref s)) return -1;   // SB_VERT
+        return s.nMax;
+    }
     // Janelas filhas visiveis, no formato "classe | id | texto | x,y WxH".
     // Comparar antes/depois prova que a aba abriu (novas janelas) e que o
     // "Voltar" devolveu o estado (volta ao conjunto inicial).
@@ -206,7 +225,7 @@ public class UiTest {
     }
     // Clique de verdade: WM_LBUTTONDOWN/UP com coordenadas relativas ao
     // proprio HWND, SEM WindowFromPoint - assim a janela nao precisa estar
-    // em primeiro plano (na suíte o form fica atras da IDE e WindowFromPoint
+    // em primeiro plano (na suite o form fica atras da IDE e WindowFromPoint
     // devolveria a janela errada). TSpeedButton nao tem HWND proprio, entao
     // o alvo e o painel pai (o LCL roteia o mouse para o botao grafico).
     public static string ClickOn(IntPtr h, int rx, int ry) {
@@ -215,6 +234,49 @@ public class UiTest {
         PostMessage(h, 0x0202, (IntPtr)0, lp);   // WM_LBUTTONUP
         return "hwnd=" + h + " rel=" + rx + "," + ry;
     }
+}
+"@
+}
+
+# sqlite3.dll x64 (a mesma que a aplicacao carrega em runtime) para gravar
+# linhas de teste em "saldos" ANTES de abrir o database: e' o que a grade da
+# tbSaldos passa a mostrar, e portanto a prova observavel do vinculo.
+if (-not ('Sq' -as [type])) {
+    $env:PATH = $root + ';' + $env:PATH
+    Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public class Sq {
+    public static int Contagem = -1;
+    public delegate int Cb(IntPtr arg, int ncol, IntPtr vals, IntPtr names);
+    [DllImport("sqlite3.dll", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    static extern int sqlite3_open(string f, out IntPtr db);
+    [DllImport("sqlite3.dll", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    static extern int sqlite3_exec(IntPtr db, string sql, Cb cb, IntPtr arg, out IntPtr err);
+    [DllImport("sqlite3.dll", CallingConvention = CallingConvention.Cdecl)]
+    static extern int sqlite3_close(IntPtr db);
+    // Primeira coluna da primeira linha de retorno (o SELECT COUNT(*)).
+    static int OnRow(IntPtr a, int n, IntPtr v, IntPtr names) {
+        if (n > 0) {
+            int x;
+            int.TryParse(Marshal.PtrToStringAnsi(Marshal.ReadIntPtr(v)), out x);
+            Contagem = x;
+        }
+        return 0;
+    }
+    static int Rodar(string file, string sql) {
+        IntPtr db, err;
+        if (sqlite3_open(file, out db) != 0) return -1;
+        try {
+            Contagem = -1;
+            if (sqlite3_exec(db, sql, OnRow, IntPtr.Zero, out err) != 0) return -2;
+            return 0;
+        } finally { sqlite3_close(db); }
+    }
+    // 1 = a sentenca rodou (INSERT commitado, o arquivo e' fechado no fim);
+    // <= 0 = falhou. Consultar devolve o valor lido (ou -1/-2 em erro).
+    public static int Executar(string file, string sql) { return Rodar(file, sql) == 0 ? 1 : -1; }
+    public static int Consultar(string file, string sql) { return Rodar(file, sql) == 0 ? Contagem : -1; }
 }
 "@
 }
@@ -280,6 +342,22 @@ function Get-DbInfo([string]$Path) {
 
 function Get-Hash([string]$Path) {
     (Get-FileHash -Path $Path -Algorithm SHA256).Hash
+}
+
+# Grava N linhas em "saldos" (a tabela da tbSaldos) direto no arquivo: e' o
+# que a grade da pagina tem de mostrar depois de abrir o database. O arquivo
+# tem de estar LIVRE (conexao encerrada). Devolve as linhas gravadas (0 =
+# arquivo ausente/falhou - quem reporta e' o chamador).
+function Add-SaldosRows([string]$Path, [int]$Count) {
+    if (-not (Test-Path $Path)) { return 0 }
+    # O INSERT com CTE recursivo grava tudo em uma unica sentenca.
+    $sql = 'WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c' +
+        ' WHERE x < ' + $Count + ') INSERT INTO "saldos"' +
+        " (account_id, balance, enddate) SELECT 1, x * 1.5, '2026-01-31' FROM c;"
+    if ([Sq]::Executar($Path, $sql) -le 0) { return 0 }
+    # Le do proprio arquivo o numero de linhas que ficou: devolver o pedido sem
+    # conferir esconderia um INSERT que nao deu certo.
+    return [Sq]::Consultar($Path, 'SELECT COUNT(*) FROM saldos;')
 }
 
 # Le o arquivo: so' funciona com a conexao ENCERRADA, porque o SQLite mantem
@@ -403,11 +481,13 @@ function Invoke-VoltarContas([IntPtr]$Main, $Base) {
 }
 
 # Um ciclo completo do botao "Voltar": tira o estado ATUAL, navega pelo menu
-# ($MenuId = miList -> tbBancos ou miGerCon -> tbContas), espera a interface
-# aparecer, clica no "Voltar" do painel inferior e espera a aba sumir. Devolve:
+# ($MenuId = miList -> tbBancos, miGerCon -> tbContas, miGerSal -> tbSaldos),
+# espera a interface aparecer, clica no "Voltar" do painel inferior e espera
+# a aba sumir. Devolve:
 #   Inicio = estado capturado antes de navegar (base real desse ciclo)
 #   Novas  = janelas novas que a navegacao trouxe (0 = a tela nao abriu)
 #   Painel = HWND do painel onde ficou o botao (Zero = nao achou)
+#   Scroll = nMax da barra da grade nova (0 = a tabela esta' vazia)
 #   Pos    = estado estabilizado ja com o clique aplicado (o CALLER avalia)
 function Invoke-CicloVoltar([IntPtr]$Main, [int]$MenuId) {
     $inicio = @([UiTest]::Visible($Main))
@@ -418,6 +498,32 @@ function Invoke-CicloVoltar([IntPtr]$Main, [int]$MenuId) {
         $apos = @([UiTest]::Visible($Main))
     }
     $novas = @($apos | Where-Object { $inicio -notcontains $_ })
+    # Linhas da grade ATIVA - lido AQUI, antes do clique no "Voltar": o
+    # Invoke-VoltarContas ja clica no botao, e depois disso a tela ja' voltou
+    # para o estado inicial (a grade nova nem esta' mais na tela). O TDBGrid
+    # usa a barra nativa do Windows, entao o nMax e' quantas linhas a grade
+    # mostra. Varre TODAS as janelas visiveis (e nao so as "novas"): so a
+    # grade da pagina ativa fica visivel, e comparar por string pegaria a
+    # grade nova como "velha" se o Windows reutilizasse o handle da grade da
+    # pagina anterior (mesma classe/texto/geometria = mesma linha). Rele a
+    # tela ate' 2s enquanto ainda for zero: ou a tabela e' vazia de verdade,
+    # ou a barra ainda nao foi montada.
+    $scroll = 0
+    $mapa = @()
+    for ($t = 0; ($t -lt 8) -and ($scroll -le 0); $t++) {
+        if ($t -gt 0) { Start-Sleep -Milliseconds 250 }
+        $scroll = 0
+        $mapa = @()
+        foreach ($n in @([UiTest]::Visible($Main))) {
+            $nv = -99
+            if ($n -match 'id=(\d+)') {
+                $nv = [UiTest]::VScrollMax([IntPtr][int64]$Matches[1])
+            }
+            $mapa += ('      [' + $nv + '] ' + $n)
+            if ($nv -gt $scroll) { $scroll = $nv }
+        }
+    }
+    # Aqui sim o "Voltar": a funcao localiza o painel E clica no botao.
     $painel = Invoke-VoltarContas $Main $inicio
     $pos = $apos
     if ($painel -ne [IntPtr]::Zero) {
@@ -432,6 +538,8 @@ function Invoke-CicloVoltar([IntPtr]$Main, [int]$MenuId) {
         Inicio = $inicio
         Novas  = $novas.Count
         Painel = $painel
+        Scroll = $scroll
+        ScrollMap = $mapa
         Pos    = @([UiTest]::Visible($Main))
     }
 }
@@ -846,12 +954,19 @@ try {
         }
     }
 
-    # ------------------------------------------------ [8] miGerCon -> tbContas
+    # ---------------- [8] miList/miGerCon/miGerSal -> tbBancos/tbContas/tbSaldos
     Write-Banner '[8/9] Voltar sem database -> estado vazio; com database -> fica'
     $pNav = $null
     # Mesma protecao do passo do miNew: excecao tem de virar FALHA.
     $ErrorActionPreference = 'Stop'
     try {
+        # Linhas de teste em "saldos" ANTES de abrir (o arquivo tem de estar
+        # livre): a grade da tbSaldos so' prova que esta' ligada a tabela se
+        # houver linhas para mostrar - 150, para passar do que cabe na tela.
+        $nLinhas = Add-SaldosRows $minewDb 150
+        Check 'linhas de teste gravadas em "saldos" (passo [8])' ($nLinhas -eq 150) (
+            'linhas=' + $nLinhas)
+
         $pNav = Start-Process -FilePath $exe -WorkingDirectory $root -PassThru
         Start-Sleep -Seconds 3
         $pNav.Refresh()
@@ -944,7 +1059,46 @@ try {
                 (@($estCom | Where-Object { $_ -like '*"Anterior:"*' }).Count -gt 0)) (
                 'janelas=' + $estCom.Count)
 
-            # ---- (c) "Fechar Database" zera a regra: volta a esconder.
+            # Controle do teste de vinculo: a suite nao grava conta nenhuma,
+            # entao a grade da tbContas fica com scroll 0 - prova de que o
+            # numero so' fica positivo quando a tabela TEM linhas.
+            Check 'grade da tbContas sem linhas (tabela vazia)' ($cCom.Scroll -eq 0) (
+                'scroll=' + $cCom.Scroll)
+
+            # ---- (c) tbSaldos: mesma navegacao/voltar da tbContas, e a grade
+            # mostra as 150 linhas injetadas em "saldos" - e' o vinculo dela
+            # com a tabela (painel, navigator e "Voltar" junto).
+            $idSal = [UiTest]::MenuId($mainNav, 'Gerenciar Saldos')
+            Check 'item de menu "Gerenciar Saldos" encontrado' ($idSal -gt 0) (
+                'id=' + $idSal)
+            if ($idSal -gt 0) {
+                $cSal = Invoke-CicloVoltar $mainNav $idSal
+                Check 'navegacao revelou a interface (tbSaldos)' ($cSal.Novas -gt 0) (
+                    'novas=' + $cSal.Novas)
+                Check 'painel do Voltar localizado (tbSaldos)' (
+                    $cSal.Painel -ne [IntPtr]::Zero)
+                Check 'grade da tbSaldos mostra as linhas de "saldos"' (
+                    $cSal.Scroll -gt 0) ('scroll=' + $cSal.Scroll)
+                if ($cSal.Scroll -le 0) {
+                    # Falhou: mostra o que a tela mostrava NO MOMENTO da leitura
+                    # (janela visivel + nMax do scroll de cada uma).
+                    Write-Output '   [depuracao] varredura da pagina da tbSaldos:'
+                    foreach ($w in $cSal.ScrollMap) { Write-Output $w }
+                }
+                # Mesma regra da tbContas: com database o "Voltar" devolve para
+                # a pagina de mes e a interface continua de pe'.
+                $estSal = $cSal.Pos
+                for ($t = 0; ($t -lt 20) -and (@($estSal | Where-Object { $_ -like '*"Show Controls"*' }).Count -eq 0); $t++) {
+                    Start-Sleep -Milliseconds 250
+                    $estSal = @([UiTest]::Visible($mainNav))
+                }
+                Check 'Voltar da tbSaldos mantem a interface visivel' (
+                    ($estSal.Count -gt 0) -and
+                    (@($estSal | Where-Object { $_ -like '*"Show Controls"*' }).Count -gt 0)) (
+                    'janelas=' + $estSal.Count)
+            }
+
+            # ---- (d) "Fechar Database" zera a regra: volta a esconder.
             $idFecha = [UiTest]::MenuId($mainNav, 'Fechar Database')
             Check 'item de menu "Fechar Database" encontrado' ($idFecha -gt 0) ('id=' + $idFecha)
             if ($idFecha -gt 0) {
