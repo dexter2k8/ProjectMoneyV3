@@ -132,10 +132,10 @@ object FormMoney: TFormMoney
     Height = 472
     Top = 50
     Width = 860
-    ActivePage = tbBancos
+    ActivePage = tbContas
     Align = alClient
     Options = [nboDoChangeOnSetIndex]
-    TabIndex = 12
+    TabIndex = 14
     TabOrder = 2
     OnChange = PageControl1Change
     object tbJan: TTabSheet
@@ -299,16 +299,15 @@ object FormMoney: TFormMoney
       ClientWidth = 852
       TabVisible = False
       object gridContas: TDBGrid
-        Left = 200
+        Left = 0
         Height = 394
         Top = 0
-        Width = 452
+        Width = 852
         Align = alClient
         AutoFillColumns = True
-        BorderSpacing.Left = 200
-        BorderSpacing.Right = 200
         Color = clWindow
         Columns = <>
+        DataSource = DataSourceContas
         Options = [dgEditing, dgTitles, dgIndicator, dgColumnResize, dgColumnMove, dgColLines, dgRowLines, dgTabs, dgAlwaysShowSelection, dgConfirmDelete, dgCancelOnExit, dgDisplayMemoText]
         TabOrder = 0
       end
@@ -336,6 +335,7 @@ object FormMoney: TFormMoney
           ChildSizing.ControlsPerLine = 100
           ClientHeight = 32
           ClientWidth = 359
+          DataSource = DataSourceContas
           Options = []
           TabOrder = 0
         end
@@ -403,9 +403,11 @@ object FormMoney: TFormMoney
       Caption = 'Arquivo'
       object miNew: TMenuItem
         Caption = 'Novo Database'
+        OnClick = miNewClick
       end
       object miOpen: TMenuItem
         Caption = 'Abrir Database'
+        OnClick = miOpenClick
       end
       object miClose: TMenuItem
         Caption = 'Fechar Database'
@@ -450,6 +452,10 @@ object FormMoney: TFormMoney
       object miGerSal: TMenuItem
         Caption = 'Gerenciar Saldos'
       end
+      object miGerCon: TMenuItem
+        Caption = 'Gerenciar Contas'
+        OnClick = miGerConClick
+      end
     end
     object mmHelp: TMenuItem
       Caption = 'Ajuda'
@@ -492,5 +498,56 @@ object FormMoney: TFormMoney
     DataSet = SQLQueryBanks
     Left = 24
     Top = 288
+  end
+  object dlgNewDatabase: TSaveDialog
+    Title = 'Novo Database'
+    DefaultExt = '.db'
+    Filter = 'Banco de dados SQLite (*.db)|*.db|Todos os arquivos (*.*)|*.*'
+    Options = [ofOverwritePrompt, ofHideReadOnly, ofPathMustExist, ofEnableSizing]
+    Left = 72
+    Top = 160
+  end
+  object dlgOpenDatabase: TOpenDialog
+    Title = 'Abrir Database'
+    DefaultExt = '.db'
+    Filter = 'Banco de dados SQLite (*.db)|*.db|Todos os arquivos (*.*)|*.*'
+    Options = [ofHideReadOnly, ofPathMustExist, ofFileMustExist, ofEnableSizing]
+    Left = 120
+    Top = 160
+  end
+  object SQLite3ConnContas: TSQLite3Connection
+    Connected = False
+    LoginPrompt = False
+    KeepConnection = False
+    Transaction = SQLTransactionContas
+    AlwaysUseBigint = False
+    Left = 72
+    Top = 224
+  end
+  object SQLTransactionContas: TSQLTransaction
+    Active = False
+    Database = SQLite3ConnContas
+    Left = 72
+    Top = 288
+  end
+  object SQLQueryContas: TSQLQuery
+    PacketRecords = -1
+    FieldDefs = <>
+    Database = SQLite3ConnContas
+    Transaction = SQLTransactionContas
+    SQL.Strings = (
+      'SELECT * FROM contas;'
+      ''
+    )
+    Options = [sqoKeepOpenOnCommit, sqoAutoApplyUpdates, sqoAutoCommit]
+    Params = <>
+    Macros = <>
+    Left = 72
+    Top = 344
+  end
+  object DataSourceContas: TDataSource
+    DataSet = SQLQueryContas
+    Left = 72
+    Top = 400
   end
 end

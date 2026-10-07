@@ -1,4 +1,7 @@
 /.vscode
 /backup
 /projectMoney.exe
-/banks.db
+# databases da aplicação (dados do usuário, criados ao lado do .exe)
+/*.db
+# artefato de restore gerado pela própria suíte de testes
+/banks.db.bak
