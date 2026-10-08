@@ -80,6 +80,7 @@ public class UiTest {
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
     [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
     [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
+    [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr h, int i);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
     [DllImport("user32.dll")] static extern bool GetScrollInfo(IntPtr h, int bar, ref SCROLLINFO s);
 
@@ -92,6 +93,17 @@ public class UiTest {
 
     public static IntPtr Msg(IntPtr h, uint m, IntPtr w, IntPtr l) {
         IntPtr r; SendMessageTimeout(h, m, w, l, 2, 3000, out r); return r;
+    }
+    // TDBGrid tem barra de rolagem VERTICAL NATIVA (e' por ela que a suite
+    // le o nMax = total de linhas - ver VScrollMax); nenhuma outra janela
+    // larga do form a tem. Como a altura da grade muda conforme o rodape
+    // (448 na tela de extratos, 498 numa aba de gestao), isto identifica
+    // gridTrans sem depender do tamanho exato. (hsb nao foi incluido: na
+    // pratica so' a vertical aparece no estilo, com AutoFillColumns.)
+    public static bool HasVScrollBar(IntPtr h) {
+        const int WS_VSCROLL = 0x00200000;
+        int s = GetWindowLong(h, -16); // GWL_STYLE
+        return (s & WS_VSCROLL) == WS_VSCROLL;
     }
     // Primeiro dialogo (#32770) que pertence ao processo indicado.
     public static IntPtr FindDialog(uint procId) {
@@ -525,6 +537,27 @@ function Get-ComboCount([IntPtr]$Combo) {
     [int64][UiTest]::Msg($Combo, 0x0146, [IntPtr]::Zero, [IntPtr]::Zero)
 }
 
+# A grade de extratos (gridTrans) e' controle do FORM com Align=alClient: ela
+# sobrepoe a area das guias e so' aparece na tela de extratos, com database
+# aberto. Identificacao: janela da largura do form (860 - as grades das abas
+# de gestao tem 852) e com a barra de rolagem vertical NATIVA do TDBGrid.
+# A ALTURA nao serve de pegada: ela muda com o rodape (448 na tela de
+# extratos, 498 numa aba de gestao), e um matcher de altura daria falso-ok
+# nos testes de "oculta".
+function Test-GridVisivelEm($Janelas) {
+    foreach ($w in $Janelas) {
+        if ($w -notmatch ' 860x\d+$') { continue }
+        if ($w -match '\| id=(\d+)') {
+            if ([UiTest]::HasVScrollBar([IntPtr][int64]$Matches[1])) { return $true }
+        }
+    }
+    return $false
+}
+
+function Test-GridVisivel([IntPtr]$Main) {
+    Test-GridVisivelEm @([UiTest]::Visible($Main))
+}
+
 # Acha o painel inferior com o botao "Voltar" entre as janelas NOVAS (em
 # relacao a $Base) e clica nele. tbBancos (pnBancosControl) e tbContas
 # (pnContas) tem a mesma geometria: 50px de altura e botao em (200,8) 79x30.
@@ -563,6 +596,8 @@ function Invoke-VoltarContas([IntPtr]$Main, $Base) {
 #   Novas  = janelas novas que a navegacao trouxe (0 = a tela nao abriu)
 #   Painel = HWND do painel onde ficou o botao (Zero = nao achou)
 #   Scroll = nMax da barra da grade nova (0 = a tabela esta' vazia)
+#   Meio   = estado ja na tela de gestao, ANTES do "Voltar" (o caller avalia
+#            o que so' existe na tela de extratos - ex.: gridTrans)
 #   Pos    = estado estabilizado ja com o clique aplicado (o CALLER avalia)
 function Invoke-CicloVoltar([IntPtr]$Main, [int]$MenuId) {
     $inicio = @([UiTest]::Visible($Main))
@@ -615,6 +650,7 @@ function Invoke-CicloVoltar([IntPtr]$Main, [int]$MenuId) {
         Painel = $painel
         Scroll = $scroll
         ScrollMap = $mapa
+        Meio   = $apos
         Pos    = @([UiTest]::Visible($Main))
     }
 }
@@ -676,6 +712,19 @@ try {
         $blocoGrid.Contains('DataSource = DataSourceExtratos')) $detGrid
     Check 'DBNavTrans ligado a DataSourceExtratos (.lfm)' (
         $blocoNav.Contains('DataSource = DataSourceExtratos')) $detNav
+    # Sem dgDisplayMemoText o TDBGrid desenha o literal "(MEMO)" no lugar do
+    # conteudo (os campos TEXT do SQLite viram ftMemo) - e o desenho nao da
+    # para ler pela janela, entao a prova tambem fica no .lfm. Vale para as
+    # 4 grades: a de extratos era a unica sem a opcao.
+    foreach ($nomeGrade in @('gridTrans', 'gridBancos', 'gridSaldos', 'gridContas')) {
+        $blocoGrade = Get-LfmBlock $lfmTexto ($nomeGrade + ': TDBGrid')
+        $detGrade = 'bloco ' + $nomeGrade + ' nao encontrado no .lfm'
+        if ($blocoGrade -ne '') {
+            $detGrade = 'dgDisplayMemoText ausente no bloco ' + $nomeGrade
+        }
+        Check ($nomeGrade + ' exibe o texto dos campos memo (.lfm)') (
+            $blocoGrade.Contains('dgDisplayMemoText')) $detGrade
+    }
     Check 'combos de filtro com OnChange (.lfm)' (
         ($lfmTexto -match 'OnChange = cbAccountChange') -and
         ($lfmTexto -match 'OnChange = cbYearChange')) (
@@ -797,6 +846,10 @@ try {
                 $visNovo = @(Wait-Interface $mainNovo $true)
                 Check 'interface revelada apos o miNew' ($visNovo.Count -gt 0) (
                     'janelas=' + $visNovo.Count)
+                # gridTrans nasce oculta no .lfm e e' do form (alClient):
+                # sem esta revelacao a tela de extratos ficaria sem grade.
+                Check 'gridTrans exibida apos o miNew' (
+                    Test-GridVisivel $mainNovo)
             }
 
             $pNovo.Refresh()
@@ -868,6 +921,9 @@ try {
             $visAbr = @(Wait-Interface $mainAbrir $true)
             Check 'interface revelada apos o miOpen' ($visAbr.Count -gt 0) (
                 'janelas=' + $visAbr.Count)
+            # Mesma revelacao do passo [5], agora pelo caminho do miOpen.
+            Check 'gridTrans exibida apos o miOpen' (
+                Test-GridVisivel $mainAbrir)
             # Combos de filtro da tela de extratos: "contas" e "extratos" estao
             # vazias neste ponto (database recem-criado no passo [5]), entao e'
             # aqui que a regra do "ano atual" e a lista de contas aparecem.
@@ -1009,6 +1065,10 @@ try {
             $visFec = @(Wait-Interface $mainFecha $false)
             Check 'interface oculta apos o Fechar Database' ($visFec.Count -eq 0) (
                 'janelas=' + $visFec.Count)
+            # gridTrans e' do form: esconder a PageControl1 nao a esconde, e'
+            # a regra do "so o menu" que tem de desliga-la na mao.
+            Check 'gridTrans oculta apos o Fechar Database' (
+                -not (Test-GridVisivel $mainFecha))
             Check 'miClose desativado apos o fechar' (
                 -not [UiTest]::MenuItemEnabled($mainFecha, $idFecha))
             $mmFecha = [UiTest]::MenuTopState($mainFecha, 'Importar OFC/OFX')
@@ -1183,6 +1243,10 @@ try {
                 'novas=' + $cCom.Novas)
             Check 'painel da tbContas localizado (com database)' (
                 $cCom.Painel -ne [IntPtr]::Zero)
+            # gridTrans e' da tela de extratos: nas telas de gestao ela tem de
+            # sumir, senao cobriria a grade de contas.
+            Check 'gridTrans oculta na tela de contas' (
+                -not (Test-GridVisivelEm $cCom.Meio))
             # Rodape e "Anterior:" so existem na tela de extratos com a
             # interface inteira levantada: e a prova de que NADA foi escondido.
             $estCom = $cCom.Pos
@@ -1195,6 +1259,9 @@ try {
                 (@($estCom | Where-Object { $_ -like '*"Show Controls"*' }).Count -gt 0) -and
                 (@($estCom | Where-Object { $_ -like '*"Anterior:"*' }).Count -gt 0)) (
                 'janelas=' + $estCom.Count)
+            # ... e a grade de extratos volta junto com a tela de extratos.
+            Check 'gridTrans exibida de volta no Voltar' (
+                Test-GridVisivelEm $estCom)
 
             # Controle do teste de vinculo: a suite nao grava conta nenhuma,
             # entao a grade da tbContas fica com scroll 0 - prova de que o

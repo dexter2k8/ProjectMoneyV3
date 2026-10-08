@@ -415,6 +415,7 @@ object FormMoney: TFormMoney
     Color = clWindow
     Columns = <>
     DataSource = DataSourceExtratos
+    Options = [dgEditing, dgTitles, dgIndicator, dgColumnResize, dgColumnMove, dgColLines, dgRowLines, dgTabs, dgAlwaysShowSelection, dgConfirmDelete, dgCancelOnExit, dgDisplayMemoText]
     TabOrder = 5
     Visible = False
   end

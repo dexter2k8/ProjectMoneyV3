@@ -229,6 +229,12 @@ begin
   // O painel inteiro some (e não só os itens): como PageControl1 é alClient,
   // os 50px do rodapé são realinhados para a guia ativa e a grade cresce.
   pnFooter.Visible := exibindoExtrato;
+  // A grade de transações é controle do FORM (também alClient, com os 24px
+  // de espaço que deixam o "Anterior" à mostra): ela sobrepõe a área das
+  // guias, então nasceu oculta no .lfm e é revelada aqui — na tela de
+  // extratos e só com database aberto. Sem conexão não há o que mostrar, e
+  // o FormCreate já entra por aqui com tbJan ativa e sem database.
+  gridTrans.Visible := exibindoExtrato and DatabaseAberto;
   // ... mas o DBNavTrans mantém a regra própria (toggleShowControls) para,
   // quando o painel voltar, o navegador respeitar o toggle.
   DBNavTrans.Visible := exibindoExtrato and toggleShowControls.Checked;
@@ -289,6 +295,9 @@ begin
   else
   begin
     pnFooter.Visible := False;
+    // gridTrans é do form, não da PageControl1: esconder a guia não a
+    // esconde, então o estado "só o menu" precisa desligá-la na mão.
+    gridTrans.Visible := False;
     tsAnterior.Visible := False;
     tslblAnterior.Visible := False;
   end;
