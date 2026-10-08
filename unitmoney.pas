@@ -135,6 +135,12 @@ type
     procedure CarregarFiltrosExtratos;
     procedure AplicarFiltroExtratos;
     procedure LimparFiltrosExtratos;
+    // Remonta o combo de contas direto do database, mantendo a conta que o
+    // usuário tinha escolhido (pelo id, para sobreviver à edição do texto).
+    // É o caminho do "Voltar" das telas de gestão: a tbContas inclui/exclui
+    // "contas" e o combo só existe na tela de extratos, então sem remontar
+    // aqui a troca só aparece no próximo miNew/miOpen/miImport.
+    procedure AtualizarComboContas;
 
   public
 
@@ -314,11 +320,78 @@ begin
   mmTransactions.Enabled := aberto;
 end;
 
+// Remonta o combo de contas a partir do database. A consulta é própria (não
+// percorre a query da tbContas) porque percorrê-la levaria o cursor da grade
+// a cada "Voltar" e derrubaria uma linha que esteja em edição — a lista que
+// importa aqui é a que está gravada, não o buffer da grade.
+procedure TFormMoney.AtualizarComboContas;
+var
+  consulta: TSQLQuery;
+  idConta, idEscolhido, indice, i: Integer;
+  texto, descricao: string;
+begin
+  if not DatabaseAberto then
+    Exit;
+
+  // Guarda a escolha antes de esvaziar. Na montagem dos filtros a combo já
+  // veio vazia do chamador, então não há o que guardar e vale a primeira
+  // conta — comportamento do miNew/miOpen, do qual os testes dependem.
+  idEscolhido := -1;
+  if (cbAccount.ItemIndex >= 0) and (cbAccount.ItemIndex < cbAccount.Items.Count) then
+    idEscolhido := Integer(PtrInt(cbAccount.Items.Objects[cbAccount.ItemIndex]));
+
+  cbAccount.Items.Clear;
+  consulta := TSQLQuery.Create(nil);
+  try
+    consulta.Database := SQLite3ConnContas;
+    consulta.Transaction := SQLTransactionContas;
+    consulta.SQL.Text := 'SELECT id, acctid, description FROM contas' +
+      ' ORDER BY id;';
+    consulta.Open;
+    while not consulta.EOF do
+    begin
+      // Uma linha por registro, com o "id" em Items.Objects (é o account_id
+      // dos extratos). O texto junta o número da conta e a descrição; sem
+      // nada usável, fica a identificação interna.
+      idConta := consulta.FieldByName('id').AsInteger;
+      texto := Trim(consulta.FieldByName('acctid').AsString);
+      descricao := Trim(consulta.FieldByName('description').AsString);
+      if descricao <> '' then
+      begin
+        if texto <> '' then
+          texto := texto + ' - ';
+        texto := texto + descricao;
+      end;
+      if texto = '' then
+        texto := 'Conta ' + IntToStr(idConta);
+      cbAccount.Items.AddObject(texto, TObject(PtrInt(idConta)));
+      consulta.Next;
+    end;
+    consulta.Close;
+  finally
+    consulta.Free;
+  end;
+
+  // De volta à conta que o usuário tinha escolhido — por id, porque é o que
+  // sobrevive à edição do texto da própria conta. Sem correspondência
+  // (primeira carga, conta excluída) entra a primeira da lista.
+  indice := 0;
+  if idEscolhido >= 0 then
+    for i := 0 to cbAccount.Items.Count - 1 do
+      if Integer(PtrInt(cbAccount.Items.Objects[i])) = idEscolhido then
+      begin
+        indice := i;
+        Break;
+      end;
+  if cbAccount.Items.Count > 0 then
+    cbAccount.ItemIndex := indice;
+end;
+
 procedure TFormMoney.CarregarFiltrosExtratos;
 var
   consulta: TSQLQuery;
-  idConta, ano: Integer;
-  texto, descricao: string;
+  ano: Integer;
+  texto: string;
 begin
   if not DatabaseAberto then
     Exit;
@@ -328,29 +401,10 @@ begin
   cbAccount.Items.Clear;
   cbYear.Items.Clear;
 
-  // Conta: a query da tbContas já está aberta, então é só percorrê-la —
-  // uma linha por registro, com o "id" guardado em Items.Objects (é o
-  // account_id dos extratos). O texto junta o número da conta e a
-  // descrição; sem nada usável, fica a identificação interna.
-  SQLQueryContas.First;
-  while not SQLQueryContas.EOF do
-  begin
-    idConta := SQLQueryContas.FieldByName('id').AsInteger;
-    texto := Trim(SQLQueryContas.FieldByName('acctid').AsString);
-    descricao := Trim(SQLQueryContas.FieldByName('description').AsString);
-    if descricao <> '' then
-    begin
-      if texto <> '' then
-        texto := texto + ' - ';
-      texto := texto + descricao;
-    end;
-    if texto = '' then
-      texto := 'Conta ' + IntToStr(idConta);
-    cbAccount.Items.AddObject(texto, TObject(PtrInt(idConta)));
-    SQLQueryContas.Next;
-  end;
-  if cbAccount.Items.Count > 0 then
-    cbAccount.ItemIndex := 0;
+  // Conta: combo recém-esvaziada, então não há seleção antiga para manter e
+  // entra a primeira — é o miNew/miOpen de sempre (e é isso que o "Voltar"
+  // reexecuta via AtualizarComboContas, mas aí com seleção a preservar).
+  AtualizarComboContas;
 
   // Ano: consulta direta na mesma conexão, porque a query da grade ainda não
   // abriu — e ela justamente depende do filtro que está sendo montado aqui.
@@ -751,7 +805,13 @@ begin
   // miOpen) a interface revelada na navegação fica de pé — e o "Fechar
   // Database" volta a zerar a regra.
   if not DatabaseAberto then
-    SetInterfaceVisible(False);
+    SetInterfaceVisible(False)
+  else
+    // Voltou de uma tela de gestão: a tbContas inclui/exclui "contas" e o
+    // combo de conta é o retrato disso na tela de extratos (é o único lugar
+    // onde ele aparece). Sem remontar aqui, a troca feita na grade só
+    // apareceria no próximo miNew/miOpen/miImport.
+    AtualizarComboContas;
 end;
 
 procedure TFormMoney.toggleShowControlsClick(Sender: TObject);

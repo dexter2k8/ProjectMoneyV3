@@ -20,7 +20,9 @@
         tabelas); "Fechar Database" volta a esconder
     [9] Importar OFC/OFX (miImport) -> linhas novas entram em "extratos",
         a reimportacao nao duplica e extrato em ANSI vira UTF-8 no arquivo
-    [10] Nenhum crash registrado no log de eventos do Windows (WER)
+    [10] "Voltar" da tbContas -> cbAccount e' remontado e reflete a conta
+        excluida pela propria tela de gestao enquanto o app estava aberto
+    [11] Nenhum crash registrado no log de eventos do Windows (WER)
 
   Sai com código 0 quando tudo passa, 1 quando há alguma falha.
   As mensagens "arquivo(linha,col) severidade: mensagem" alimentam o
@@ -634,7 +636,7 @@ if ($dbExisted) {
 
 try {
     # ------------------------------------------------ [1] compilação/lint
-    Write-Banner '[1/10] Compilacao e lint (lazbuild -B)'
+    Write-Banner '[1/11] Compilacao e lint (lazbuild -B)'
     if ($SkipLint) {
         Write-Output '   (pulado por -SkipLint)'
     }
@@ -680,7 +682,7 @@ try {
         'cbAccountChange e/ou cbYearChange ausentes')
 
     # ------------------------------------------------ [2] cria o banco
-    Write-Banner '[2/10] Sem banks.db -> deve criar o arquivo'
+    Write-Banner '[2/11] Sem banks.db -> deve criar o arquivo'
     if (Test-Path $db) { Remove-Item $db -Force }
     $r = Invoke-App $RunSeconds
     Test-NoCrash $r 'aplicacao permanece viva (sem crash)'
@@ -694,7 +696,7 @@ try {
     }
 
     # ------------------------------------------------ [3] já existe
-    Write-Banner '[3/10] Com banks.db -> nao deve recriar nem alterar'
+    Write-Banner '[3/11] Com banks.db -> nao deve recriar nem alterar'
     if (Test-Path $db) {
         $hashBefore = Get-Hash $db
         $r = Invoke-App $RunSeconds
@@ -706,7 +708,7 @@ try {
     }
 
     # ------------------------------------------------ [4] DLL ausente
-    Write-Banner '[4/10] Sem sqlite3.dll -> erro deve ser tratado'
+    Write-Banner '[4/11] Sem sqlite3.dll -> erro deve ser tratado'
     if ($SkipDllTest) {
         Write-Output '   (pulado por -SkipDllTest)'
     }
@@ -735,7 +737,7 @@ try {
     }
 
     # ------------------------------------------------ [5] miNew -> database
-    Write-Banner '[5/10] Novo Database (miNew) -> cria .db com as 3 tabelas'
+    Write-Banner '[5/11] Novo Database (miNew) -> cria .db com as 3 tabelas'
     if (Test-Path $minewDb) { Remove-Item $minewDb -Force -ErrorAction SilentlyContinue }
     $pNovo = $null
     # Qualquer excecao no fluxo tem de virar FALHA: se escapasse em silencio,
@@ -826,7 +828,7 @@ try {
     }
 
     # ------------------------------------------------ [6] miOpen -> abrir .db
-    Write-Banner '[6/10] Abrir Database (miOpen) -> abre o valido e rejeita o invalido'
+    Write-Banner '[6/11] Abrir Database (miOpen) -> abre o valido e rejeita o invalido'
     $pAbrir  = $null
     $hashAbr = $null
     # O passo [4] apaga banks.db e ele so' e recriado no passo final: garante o
@@ -944,7 +946,7 @@ try {
     }
 
     # ------------------------------------------------ [7] miClose -> fechar
-    Write-Banner '[7/10] Fechar Database (miClose) -> encerra a conexao com o arquivo'
+    Write-Banner '[7/11] Fechar Database (miClose) -> encerra a conexao com o arquivo'
     $pFecha = $null
     # Mesma protecao dos passos de interface: excecao tem de virar FALHA.
     $ErrorActionPreference = 'Stop'
@@ -1062,7 +1064,7 @@ try {
     }
 
     # ---------------- [8] miList/miGerCon/miGerSal -> tbBancos/tbContas/tbSaldos
-    Write-Banner '[8/10] Voltar sem database -> estado vazio; com database -> fica'
+    Write-Banner '[8/11] Voltar sem database -> estado vazio; com database -> fica'
     $pNav = $null
     # Mesma protecao do passo do miNew: excecao tem de virar FALHA.
     $ErrorActionPreference = 'Stop'
@@ -1283,7 +1285,7 @@ try {
     }
 
     # ------------------------------------ [9] importar OFC/OFX (miImport)
-    Write-Banner '[9/10] Importar OFC/OFX -> linhas novas entram em "extratos"'
+    Write-Banner '[9/11] Importar OFC/OFX -> linhas novas entram em "extratos"'
     $pImp  = $null
     $antes = 0
     # Mesma protecao dos demais passos: excecao tem de virar FALHA.
@@ -1552,8 +1554,175 @@ try {
             $temAnsi)
     }
 
-    # ------------------------------------------------ [10] estado final + WER
-    Write-Banner '[10/10] Estado final e log de crashes do Windows'
+    # ---------------------------- [10] cbAccount acompanha a tbContas no Voltar
+    Write-Banner '[10/11] "Voltar" da tbContas remonta cbAccount'
+    $pCb = $null
+    # Mesma protecao dos demais passos: excecao tem de virar FALHA.
+    $ErrorActionPreference = 'Stop'
+    try {
+        # O passo [9] deixou miNew-test.db com 1 conta: e' o banco aberto
+        # aqui. A conta tem de ser excluida COM o aplicativo rodando (a
+        # gravacao externa no arquivo devolve busy: a transacao de leitura
+        # da grade segura o lock) e pelo proprio fluxo do usuario - o combo
+        # so' existe na tela de extratos, entao sem a remontagem feita no
+        # "Voltar" a conta excluida continuaria aparecendo la.
+        $pCb = Start-Process -FilePath $exe -WorkingDirectory $root -PassThru
+        Start-Sleep -Seconds 3
+        $pCb.Refresh()
+        $mainCb = $pCb.MainWindowHandle
+        Check 'aplicacao abriu para o passo [10]' ($mainCb -ne [IntPtr]::Zero)
+        $dlgCb = Invoke-MenuFileDialog $pCb 'Abrir Database'
+        Check 'dialogo "Abrir" abriu (passo [10])' ($dlgCb -ne [IntPtr]::Zero)
+        if ($dlgCb -ne [IntPtr]::Zero) {
+            $editCb = Set-FileDialogName $dlgCb $minewDb
+            Check 'campo de nome do arquivo encontrado (passo [10])' (
+                $editCb -ne [IntPtr]::Zero)
+            Check 'dialogo "Abrir" fechou ao confirmar (passo [10])' (
+                Wait-DialogClosed $dlgCb)
+            # A conexao abre depois que o dialogo some: um aviso pendente
+            # aqui seria confundido com o resultado de outro fluxo.
+            $avisoCb = [IntPtr]::Zero
+            for ($t = 0; ($t -lt 12) -and ($avisoCb -eq [IntPtr]::Zero); $t++) {
+                Start-Sleep -Milliseconds 250
+                $avisoCb = [UiTest]::FindDialog([uint32]$pCb.Id)
+            }
+            Check 'nenhum aviso ao abrir (passo [10])' ($avisoCb -eq [IntPtr]::Zero) (
+                'hwnd=' + $avisoCb)
+        }
+        $visCb = @(Wait-Interface $mainCb $true)
+        Check 'interface revelada no passo [10]' ($visCb.Count -gt 0) (
+            'janelas=' + $visCb.Count)
+
+        # Estado inicial: so' a conta do passo [9].
+        $cbAntes = Find-ComboHwnd $mainCb 212
+        $nAntes  = Get-ComboCount $cbAntes
+        Check 'cbAccount com 1 conta antes da troca' ($nAntes -eq 1) (
+            'combo=' + $cbAntes + ' itens=' + $nAntes)
+
+        # Navega ate' a tbContas e apaga a conta PELA PROPRIA interface: o
+        # DBNavigator e' botao pintado (sem janela propria para enumerar),
+        # entao o teste aponta o clique pelo centro do sexto de dez botoes de
+        # largura igual - a ordem e' nbFirst..nbRefresh, o "Delete" fica na
+        # posicao 6 - com o tamanho lido do proprio .lfm (359x32).
+        $baseCb = @([UiTest]::Visible($mainCb))
+        $idConCb = [UiTest]::MenuId($mainCb, 'Gerenciar Contas')
+        Check 'item de menu "Gerenciar Contas" encontrado (passo [10])' (
+            $idConCb -gt 0)
+        $aposCb = $baseCb
+        if ($idConCb -gt 0) {
+            [void][UiTest]::Msg($mainCb, 0x0111, [IntPtr]$idConCb, [IntPtr]::Zero)
+            for ($t = 0; ($t -lt 20) -and (
+                @($aposCb | Where-Object { $baseCb -notcontains $_ }).Count -eq 0);
+                $t++) {
+                Start-Sleep -Milliseconds 250
+                $aposCb = @([UiTest]::Visible($mainCb))
+            }
+            Check 'tela da tbContas abriu (passo [10])' (
+                @($aposCb | Where-Object { $baseCb -notcontains $_ }).Count -gt 0)
+
+            $navCb = @($aposCb | Where-Object { $_ -match ' 359x32$' }) |
+                Select-Object -First 1
+            Check 'DBNavigator da tbContas encontrado (passo [10])' (
+                [bool]$navCb) ('linha=' + $navCb)
+            if ($navCb) {
+                $navHwnd = [IntPtr][int64](
+                    [regex]::Match($navCb, 'id=(\d+)').Groups[1].Value)
+                $navBox = [regex]::Match($navCb, '(\d+)x(\d+)$')
+                $xDel = [int][Math]::Floor(
+                    ([int]$navBox.Groups[1].Value) * 11 / 20)   # 5.5 de 10
+                $yDel = [int][Math]::Floor(([int]$navBox.Groups[2].Value) / 2)
+                [void][UiTest]::ClickOn($navHwnd, $xDel, $yDel)
+
+                # ConfirmDelete = True: o "Delete" pergunta antes. O dialogo
+                # (#32770) nao tem botao com control ID 1 (nao e' o nativo
+                # MessageBox) e o da ESQUERDA e' o OK de mbOKCancel - ordem
+                # fixa, entao nao depende do idioma do Windows.
+                $dlgConf = [IntPtr]::Zero
+                for ($t = 0; ($t -lt 8) -and ($dlgConf -eq [IntPtr]::Zero); $t++) {
+                    Start-Sleep -Milliseconds 250
+                    $dlgConf = [UiTest]::FindDialog([uint32]$pCb.Id)
+                }
+                Check 'confirmacao do delete apareceu (passo [10])' (
+                    $dlgConf -ne [IntPtr]::Zero) ('hwnd=' + $dlgConf)
+                if ($dlgConf -ne [IntPtr]::Zero) {
+                    $btnConf = $null
+                    $linhasBtn = @([UiTest]::Visible($dlgConf)) |
+                        Where-Object { $_ -match '^Button \|' }
+                    if ($linhasBtn) {
+                        $btnConf = ($linhasBtn | ForEach-Object {
+                            [pscustomobject]@{
+                                Hwnd = [IntPtr][int64](
+                                    [regex]::Match($_, 'id=(\d+)').Groups[1].Value)
+                                X    = [int]([regex]::Match($_, '\| (\d+),\d+ ').
+                                    Groups[1].Value)
+                            }
+                        } | Sort-Object X | Select-Object -First 1).Hwnd
+                    }
+                    Check 'botao de confirmacao encontrado (passo [10])' (
+                        $null -ne $btnConf) ('linha=' + ($linhasBtn -join ' ;; '))
+                    # Duas tentativas: na primeira o clique pode chegar antes
+                    # de o dialogo assentar; a segunda cobre esse caso.
+                    for ($t = 0; ($t -lt 2) -and [UiTest]::IsWindow($dlgConf); $t++) {
+                        if ($null -ne $btnConf) {
+                            [void][UiTest]::PostMessage($btnConf, 0x00F5,
+                                [IntPtr]::Zero, [IntPtr]::Zero)   # BM_CLICK
+                        }
+                        for ($w = 0;
+                            ($w -lt 6) -and [UiTest]::IsWindow($dlgConf); $w++) {
+                            Start-Sleep -Milliseconds 250
+                        }
+                    }
+                    Check 'confirmacao do delete respondida (passo [10])' (
+                        -not [UiTest]::IsWindow($dlgConf)) ('hwnd=' + $dlgConf)
+                }
+            }
+
+            # O "Voltar" e' o unico caminho de volta para a tela de extratos,
+            # e e' la que o combo tem de ser remontado (na tela de gestao ele
+            # some junto com o cabecalho).
+            $painelCb = Invoke-VoltarContas $mainCb $baseCb
+            Check 'botao "Voltar" da tbContas encontrado (passo [10])' (
+                $painelCb -ne [IntPtr]::Zero)
+            # As combos do cabecalho voltam junto com a tela de extratos: o
+            # HWND pode ser outro, entao procura de novo ate' aparecer.
+            $cbDepois = [IntPtr]::Zero
+            for ($t = 0; ($t -lt 20) -and ($cbDepois -eq [IntPtr]::Zero); $t++) {
+                Start-Sleep -Milliseconds 250
+                $cbDepois = Find-ComboHwnd $mainCb 212
+            }
+            $nDepois = Get-ComboCount $cbDepois
+            Check 'cbAccount remontou no "Voltar" depois de excluir a conta' (
+                $nDepois -eq ($nAntes - 1)) (
+                'combo=' + $cbDepois + ' antes=' + $nAntes + ' depois=' + $nDepois)
+            $pCb.Refresh()
+            Check 'aplicacao viva apos o "Voltar" (passo [10])' (-not $pCb.HasExited)
+        }
+    }
+    catch {
+        Check 'fluxo do cbAccount no "Voltar" sem excecao' $false $_.Exception.Message
+    }
+    finally {
+        $ErrorActionPreference = 'Continue'
+        if ($pCb -and -not $pCb.HasExited) {
+            try { $pCb.Kill(); $pCb.WaitForExit() } catch { }
+        }
+    }
+
+    # Conferencia no arquivo: so' funciona com a conexao encerrada (app
+    # morta) e prova que o delete de verdade foi aplicado - nao so' some da
+    # combo em memoria.
+    if (-not (Test-Path $minewDb)) {
+        Check 'miNew-test.db disponivel para a conferencia do delete' $false (
+            'arquivo ausente')
+    }
+    else {
+        $restamCb = [Sq]::Consultar($minewDb, 'SELECT COUNT(*) FROM contas;')
+        Check 'delete persistido no arquivo (contas ficou vazia)' (
+            $restamCb -eq 0) ('qtd=' + $restamCb)
+    }
+
+    # ------------------------------------------------ [11] estado final + WER
+    Write-Banner '[11/11] Estado final e log de crashes do Windows'
     if (-not (Test-Path $db)) {
         $null = Invoke-App $RunSeconds   # recria o banco para deixar o ambiente utilizavel
     }
