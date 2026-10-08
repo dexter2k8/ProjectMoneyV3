@@ -19,7 +19,8 @@
         database aberto -> a interface fica (tbContas e tbSaldos ligadas as
         tabelas); "Fechar Database" volta a esconder
     [9] Importar OFC/OFX (miImport) -> linhas novas entram em "extratos",
-        a reimportacao nao duplica e extrato em ANSI vira UTF-8 no arquivo
+        a reimportacao REPETE as linhas (registro igual e' permitido) e
+        extrato em ANSI vira UTF-8 no arquivo
     [10] "Voltar" da tbContas -> cbAccount e' remontado e reflete a conta
         excluida pela propria tela de gestao enquanto o app estava aberto
     [11] Nenhum crash registrado no log de eventos do Windows (WER)
@@ -45,6 +46,7 @@ $minewDb = Join-Path $root 'miNew-test.db'
 $lixoDb  = Join-Path $root 'lixo-test.db'
 $ofxUtf8 = Join-Path $root 'importa-test.ofx'
 $ofxAnsi = Join-Path $root 'importa-test-ansi.ofx'
+$ofxOutraConta = Join-Path $root 'importa-test-conta.ofx'
 $passed = 0
 $failed = 0
 
@@ -1478,6 +1480,46 @@ try {
         Check 'fixture OFX (UTF-8 e ANSI) gravada' (
             (Test-Path $ofxUtf8) -and (Test-Path $ofxAnsi))
 
+        # Extrato valido, mas de OUTRA conta: o <ACCTID> (9999) nao e' o da
+        # conta escolhida no combo (4321). A importacao tem de ser recusada
+        # ANTES de gravar - o resultado visivel e' um aviso, nao o dialogo de
+        # resultado. O memo do registro e' a prova no arquivo depois: se ele
+        # aparecer em "extratos", a conferencia de conta nao rodou.
+        $memoOutraConta = 'Lancamento da outra conta'
+        $ofxOutraLinhas = @(
+            'OFXHEADER:100'
+            'DATA:20240101000000'
+            'VERSION:102'
+            'SECURITY:NONE'
+            'ENCODING:USASCII'
+            'CHARSET:1252'
+            '<OFX>'
+            '<BANKMSGSRSV1>'
+            '<STMTTRNRS>'
+            '<STMTRS>'
+            '<CURDEF>BRL'
+            '<BANKACCTFROM>'
+            '<BANKID>001'
+            '<ACCTID>9999'
+            '<ACCTTYPE>CHECKING'
+            '</BANKACCTFROM>'
+            '<BANKTRANLIST>'
+            '<STMTTRN>'
+            '<TRNTYPE>DEBIT'
+            '<DTPOSTED>20240615'
+            '<TRNAMT>-77.77'
+            '<MEMO>' + $memoOutraConta
+            '</STMTTRN>'
+            '</BANKTRANLIST>'
+            '</STMTRS>'
+            '</STMTTRNRS>'
+            '</BANKMSGSRSV1>'
+            '</OFX>'
+        )
+        [IO.File]::WriteAllText($ofxOutraConta,
+            ($ofxOutraLinhas -join "`r`n") + "`r`n")
+        Check 'fixture OFX de outra conta gravada' (Test-Path $ofxOutraConta)
+
         # Abre o database: e' o miOpen que carrega as combos de filtro.
         $pImp = Start-Process -FilePath $exe -WorkingDirectory $root -PassThru
         Start-Sleep -Seconds 3
@@ -1543,7 +1585,9 @@ try {
         Check 'cbYear manteve a selecao do usuario (indice 1 = 2025)' (
             $selAnoB -eq 1) ('sel=' + $selAnoB)
 
-        # Reimportar o MESMO arquivo nao pode duplicar: as 4 linhas ja existem.
+        # Reimportar o MESMO arquivo REPETE as linhas: registro igual e'
+        # permitido (a conferencia disso e' no arquivo, no fim do passo). O
+        # ano da combo nao muda, ja' que os anos do arquivo ja' la' estao.
         $dlgImp2 = Invoke-Importar $pImp $ofxUtf8
         Check 'dialogo de resultado da reimportacao' ($dlgImp2 -ne [IntPtr]::Zero)
         if ($dlgImp2 -ne [IntPtr]::Zero) {
@@ -1567,6 +1611,20 @@ try {
         $cbAnoD = Find-ComboHwnd $mainImp 100
         Check 'cbYear segue com 3 anos (2024 ja existia no arquivo)' (
             (Get-ComboCount $cbAnoD) -eq 3) ('itens=' + (Get-ComboCount $cbAnoD))
+
+        # Arquivo de outra conta: o aviso tem de vir no lugar do resultado.
+        $dlgImp4 = Invoke-Importar $pImp $ofxOutraConta
+        Check 'aviso de conta diferente exibido' ($dlgImp4 -ne [IntPtr]::Zero)
+        if ($dlgImp4 -ne [IntPtr]::Zero) {
+            [void][UiTest]::PostMessage($dlgImp4, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)  # WM_CLOSE
+            Check 'aviso de conta diferente dispensado' (
+                Wait-DialogClosed $dlgImp4)
+        }
+        # A recusa acontece antes de fechar/reabrir as queries, entao as
+        # combos ficam exatamente como estavam (3 anos, 1 conta).
+        $cbAnoE = Find-ComboHwnd $mainImp 100
+        Check 'cbYear inalterado apos a recusa' (
+            (Get-ComboCount $cbAnoE) -eq 3) ('itens=' + (Get-ComboCount $cbAnoE))
         $pImp.Refresh()
         Check 'aplicacao viva ao fim das importacoes' (-not $pImp.HasExited)
     }
@@ -1581,33 +1639,49 @@ try {
     }
 
     # Conferencia no arquivo: so' funciona com a conexao encerrada (app morta).
-    # 5 linhas novas no total (4 do UTF-8 + 1 do ANSI) e nada duplicado.
+    # 9 linhas novas no total: 4 da 1a importacao + os MESMOS 4 repetidos na
+    # reimportacao (registro igual e' permitido) + 1 do ANSI.
     if (-not (Test-Path $minewDb)) {
         Check 'miNew-test.db disponivel para a conferencia final' $false (
             'arquivo ausente')
     }
     else {
         $depois = [Sq]::Consultar($minewDb, 'SELECT COUNT(*) FROM extratos;')
-        Check 'importacao gravou 5 linhas e a reimportacao nao duplicou' (
-            $depois -eq ($antes + 5)) ('antes=' + $antes + ' depois=' + $depois)
-        Check 'data com hora+fuso virou os 8 primeiros digitos' (
+        Check 'importacao gravou 9 linhas (4 + 4 repetidos + 1 do ANSI)' (
+            $depois -eq ($antes + 9)) ('antes=' + $antes + ' depois=' + $depois)
+        # O arquivo de outra conta (ACCTID 9999) foi recusado na tela; a
+        # prova duraria no arquivo: o registro dele nao pode estar em
+        # "extratos" - se estiver, a conferencia de conta nao rodou. (-1 =
+        # o fixture nem foi criado, entao nao passa em silencio.)
+        $qtdOutra = -1
+        if ($null -ne $memoOutraConta) {
+            $qtdOutra = [Sq]::Consultar($minewDb,
+                "SELECT COUNT(*) FROM extratos WHERE memo = '" +
+                $memoOutraConta + "';")
+        }
+        Check 'extrato da outra conta nao foi gravado' ($qtdOutra -eq 0) (
+            'linhas=' + $qtdOutra)
+        # As linhas do arquivo UTF-8 estao gravadas DUAS vezes (importacao +
+        # reimportacao do mesmo arquivo) - e' a prova de que registro repetido
+        # entra; o ANSI foi importado uma vez so'.
+        Check 'data com hora+fuso virou os 8 primeiros digitos (2x)' (
             [Sq]::Consultar($minewDb,
                 "SELECT COUNT(*) FROM extratos WHERE dtposted = '20250305';"
-            ) -eq 1)
-        Check 'registro no estilo XML gravado' (
+            ) -eq 2)
+        Check 'registro no estilo XML gravado (2x)' (
             [Sq]::Consultar($minewDb,
                 "SELECT COUNT(*) FROM extratos WHERE dtposted = '20250410';"
-            ) -eq 1)
-        Check 'CHECKNUM virou chknum' (
+            ) -eq 2)
+        Check 'CHECKNUM virou chknum (2x)' (
             [Sq]::Consultar($minewDb,
-                "SELECT COUNT(*) FROM extratos WHERE chknum = '101';") -eq 1)
-        Check 'memo do SGML gravado' (
+                "SELECT COUNT(*) FROM extratos WHERE chknum = '101';") -eq 2)
+        Check 'memo do SGML gravado (2x)' (
             [Sq]::Consultar($minewDb,
                 "SELECT COUNT(*) FROM extratos WHERE memo = 'Pagamento de luz';"
-            ) -eq 1)
-        Check 'valor numerico gravado' (
+            ) -eq 2)
+        Check 'valor numerico gravado (2x)' (
             [Sq]::Consultar($minewDb,
-                'SELECT COUNT(*) FROM extratos WHERE trnamt = -123.45;') -eq 1)
+                'SELECT COUNT(*) FROM extratos WHERE trnamt = -123.45;') -eq 2)
         # O Sq le o .db com charset ANSI: acento so' se confere nos BYTES do
         # arquivo (em UTF-8), que e' o formato gravado pelo parser.
         $textoDb = [Text.Encoding]::UTF8.GetString(
@@ -1826,6 +1900,10 @@ finally {
     }
     if (Test-Path $ofxAnsi) {
         Remove-Item $ofxAnsi -Force -ErrorAction SilentlyContinue
+    }
+    # ... e o extrato de OUTRA conta, que a importacao tem de recusar
+    if (Test-Path $ofxOutraConta) {
+        Remove-Item $ofxOutraConta -Force -ErrorAction SilentlyContinue
     }
 }
 

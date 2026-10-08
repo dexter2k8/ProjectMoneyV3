@@ -26,12 +26,13 @@ function IsAccountsDatabase(const AFileName: string): Boolean;
 // Grava as transacoes lidas de um OFX/OFC na tabela "extratos" da conta
 // AAccountId. Usa a MESMA conexao/transacao que a interface ja' tem aberta:
 // uma conexao nova contra o mesmo arquivo brigaria com o lock do SQLite.
-// Uma linha so' entra se ainda nao existir (mesma conta, tipo, data, valor,
-// memo e cheque), entao reimportar o arquivo nao duplica nada.
-// Devolve quantas linhas entraram e, em ADuplicadas, quantas ja' estavam.
+// Todo registro lido entra: nao ha' conferencia de repeticao, nem dentro do
+// proprio arquivo (bancos lancam lancamentos identicos no mesmo dia) nem
+// contra o que ja' esta' gravado (reimportar e' uma escolha do usuario).
+// Devolve quantas linhas entraram.
 // Erro de banco propaga: o dialogo e' do chamador (que tambem sabe o arquivo).
 function ImportarExtratos(AConn: TSQLite3Connection; AAccountId: Integer;
-  const ARegistros: TRegistrosOfx; out ADuplicadas: Integer): Integer;
+  const ARegistros: TRegistrosOfx): Integer;
 
 implementation
 
@@ -221,15 +222,13 @@ begin
 end;
 
 function ImportarExtratos(AConn: TSQLite3Connection; AAccountId: Integer;
-  const ARegistros: TRegistrosOfx; out ADuplicadas: Integer): Integer;
+  const ARegistros: TRegistrosOfx): Integer;
 var
-  consulta: TSQLQuery;
   trans: TSQLTransaction;
   i: Integer;
   reg: TRegistroOfx;
 begin
   Result := 0;
-  ADuplicadas := 0;
   if Length(ARegistros) = 0 then
     Exit;
 
@@ -237,65 +236,35 @@ begin
   if trans = nil then
     raise Exception.Create('A conexao nao tem transacao para gravar o extrato.');
 
-  consulta := TSQLQuery.Create(nil);
   try
-    consulta.Database := AConn;
-    consulta.Transaction := trans;
-    try
-      for i := 0 to High(ARegistros) do
-      begin
-        reg := ARegistros[i];
+    for i := 0 to High(ARegistros) do
+    begin
+      reg := ARegistros[i];
 
-        // Ja' existe essa linha nessa conta? O valor e' comparado como
-        // numero: trnamt e' NUMERIC, entao o SQLite converte o texto da
-        // query ("12.340") antes de bater com o 12.34 gravado - e' o que
-        // faz a reimportacao nao duplicar mesmo com decimal a mais. Nos
-        // campos de texto a comparacao e' direta, e COALESCE cobre memo e
-        // chknum gravados como NULL por gravacao manual.
-        consulta.Close;
-        consulta.SQL.Text :=
-          'SELECT COUNT(*) FROM extratos WHERE account_id = ' +
-          IntToStr(AAccountId) + ' AND trntype = ' + QuotedStr(reg.TrnType) +
-          ' AND dtposted = ' + QuotedStr(reg.DtPosted) +
-          ' AND trnamt = ' + QuotedStr(reg.TrnAmt) +
-          ' AND COALESCE(memo, '''') = ' + QuotedStr(reg.Memo) +
-          ' AND COALESCE(chknum, '''') = ' + QuotedStr(reg.ChkNum) + ';';
-        consulta.Open;
-        if consulta.Fields[0].AsInteger > 0 then
-        begin
-          consulta.Close;
-          Inc(ADuplicadas);
-          Continue;
-        end;
-        consulta.Close;
-
-        // O valor entra como texto e a coluna NUMERIC converte na gravacao
-        // (a mesma regra da comparacao acima). Nao ha StrToFloat aqui de
-        // proposito: no pt-BR ele le "12.34" trocando ponto por virgula.
-        AConn.ExecuteDirect(
-          'INSERT INTO extratos (account_id, trntype, dtposted, trnamt,' +
-          ' memo, chknum) VALUES (' + IntToStr(AAccountId) + ', ' +
-          QuotedStr(reg.TrnType) + ', ' + QuotedStr(reg.DtPosted) + ', ' +
-          QuotedStr(reg.TrnAmt) + ', ' + QuotedStr(reg.Memo) + ', ' +
-          QuotedStr(reg.ChkNum) + ');', trans);
-        Inc(Result);
-      end;
-
-      // Uma transacao so' para a importacao inteira: ou entra tudo, ou nada.
-      // O Commit fecha o que a interface tem aberto nessa transacao (opcao
-      // sqoKeepOpenOnCommit mantem as queries ligadas), por isso o chamador
-      // recarrega os filtros e a grade depois daqui.
-      if trans.Active then
-        trans.Commit;
-    except
-      // Falha no meio: desfaz as linhas que ja tinham entrado para o
-      // extrato nao ficar pela metade.
-      if trans.Active then
-        trans.Rollback;
-      raise;
+      // O valor entra como texto e a coluna NUMERIC converte na gravacao.
+      // Nao ha' StrToFloat aqui de proposito: no pt-BR ele le "12.34"
+      // trocando ponto por virgula.
+      AConn.ExecuteDirect(
+        'INSERT INTO extratos (account_id, trntype, dtposted, trnamt,' +
+        ' memo, chknum) VALUES (' + IntToStr(AAccountId) + ', ' +
+        QuotedStr(reg.TrnType) + ', ' + QuotedStr(reg.DtPosted) + ', ' +
+        QuotedStr(reg.TrnAmt) + ', ' + QuotedStr(reg.Memo) + ', ' +
+        QuotedStr(reg.ChkNum) + ');', trans);
+      Inc(Result);
     end;
-  finally
-    consulta.Free;
+
+    // Uma transacao so' para a importacao inteira: ou entra tudo, ou nada.
+    // O Commit fecha o que a interface tem aberto nessa transacao (opcao
+    // sqoKeepOpenOnCommit mantem as queries ligadas), por isso o chamador
+    // recarrega os filtros e a grade depois daqui.
+    if trans.Active then
+      trans.Commit;
+  except
+    // Falha no meio: desfaz as linhas que ja tinham entrado para o
+    // extrato nao ficar pela metade.
+    if trans.Active then
+      trans.Rollback;
+    raise;
   end;
 end;
 

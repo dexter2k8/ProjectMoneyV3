@@ -542,8 +542,10 @@ end;
 procedure TFormMoney.miImportClick(Sender: TObject);
 var
   caminho, contaTexto, anoTexto, mensagem, erro: string;
+  acctidArquivo, acctidConta: string;
   registros: TRegistrosOfx;
-  ignorados, novos, duplicados, contaId, indice: Integer;
+  consulta: TSQLQuery;
+  ignorados, novos, contaId, indice: Integer;
 begin
   // Cada linha de "extratos" aponta para uma conta (account_id NOT NULL),
   // entao sem conta escolhida nao ha para onde gravar. O menu "Transacoes"
@@ -573,8 +575,11 @@ begin
     caminho := IncludeTrailingPathDelimiter(dlgImportar.InitialDir) + caminho;
 
   // Le o arquivo ANTES de mexer no database: falha de leitura nao grava nada.
+  // A conta de origem (<ACCTID>) vem da mesma leitura - e' ela que confere se
+  // o extrato pertence a conta escolhida no filtro.
   try
     registros := LerOfx(caminho, ignorados);
+    acctidArquivo := LerAcctIdDoArquivo(caminho);
   except
     on E: Exception do
     begin
@@ -593,8 +598,39 @@ begin
     Exit;
   end;
 
+  // O arquivo diz de qual conta veio (<ACCTID>): conferir com a conta
+  // escolhida no filtro evita gravar linhas na conta errada - importar nao
+  // tem outro destino possivel. Arquivo sem ACCTID nao tem o que conferir e
+  // segue normalmente. A consulta e' propria pelo mesmo motivo de
+  // AtualizarComboContas: nao mover o cursor da grade.
+  acctidConta := '';
+  if acctidArquivo <> '' then
+  begin
+    consulta := TSQLQuery.Create(nil);
+    try
+      consulta.Database := SQLite3ConnContas;
+      consulta.Transaction := SQLTransactionContas;
+      consulta.SQL.Text := 'SELECT acctid FROM contas WHERE id = ' +
+        IntToStr(contaId) + ';';
+      consulta.Open;
+      if not consulta.EOF then
+        acctidConta := Trim(consulta.FieldByName('acctid').AsString);
+      consulta.Close;
+    finally
+      consulta.Free;
+    end;
+    if (acctidConta <> '') and (not SameText(acctidArquivo, acctidConta)) then
+    begin
+      MessageDlg('O arquivo "' + ExtractFileName(caminho) + '" é da conta "' +
+        acctidArquivo + '",' + LineEnding + 'mas a conta selecionada no ' +
+        'filtro é "' + acctidConta + '".' + LineEnding +
+        'Escolha a conta certa no filtro e importe de novo.',
+        mtWarning, [mbOK], 0);
+      Exit;
+    end;
+  end;
+
   novos := 0;
-  duplicados := 0;
   erro := '';
   // As queries fecham antes da gravacao: o commit da importacao nao pode
   // encontrar sentenca em andamento (o SQLite recusa o commit nesse caso).
@@ -605,8 +641,7 @@ begin
       SQLQueryContas.Close;
       SQLQuerySaldos.Close;
       SQLQueryExtratos.Close;
-      novos := ImportarExtratos(SQLite3ConnContas, contaId, registros,
-        duplicados);
+      novos := ImportarExtratos(SQLite3ConnContas, contaId, registros);
     except
       on E: Exception do
         erro := 'Não foi possível importar "' + ExtractFileName(caminho) +
@@ -643,15 +678,12 @@ begin
     Exit;
   end;
 
-  // O que o usuario precisa saber: quanto entrou, quanto ja' existia (reimportar
-  // o mesmo arquivo nao duplica) e quanto o arquivo tinha incompleto.
+  // O que o usuario precisa saber: quanto entrou e quanto o arquivo tinha
+  // incompleto. Repetido nao e' assunto aqui: o que vier do arquivo entra,
+  // inclusive linha identica a outra do proprio extrato.
   mensagem := 'Importação concluída.' + LineEnding + LineEnding +
     IntToStr(novos) + ' ' + Plural(novos, 'registro adicionado em "',
     'registros adicionados em "') + contaTexto + '".';
-  if duplicados > 0 then
-    mensagem := mensagem + LineEnding + IntToStr(duplicados) + ' ' +
-      Plural(duplicados, 'registro já existia e foi pulado.',
-      'registros já existiam e foram pulados.');
   if ignorados > 0 then
     mensagem := mensagem + LineEnding + IntToStr(ignorados) + ' ' +
       Plural(ignorados, 'bloco ignorado (sem data ou sem valor).',

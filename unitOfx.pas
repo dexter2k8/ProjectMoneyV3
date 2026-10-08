@@ -47,6 +47,12 @@ function ProximaTag(const ATexto: string; var APos: Integer;
 // campo so' de ProximaTag, para tirar um valor avulso do arquivo.
 function ExtrairTag(const ATag, ATexto: string): string;
 
+// Conta de origem informada pelo arquivo: o conteudo do primeiro <ACCTID>
+// (BANKACCTFROM de OFX/OFC, CCACCTFROM e INVACCTFROM usam a propria tag).
+// '' quando o arquivo nao informa conta nenhuma - nesse caso nao ha o que
+// conferir no chamador, que decide se importa mesmo assim.
+function LerAcctIdDoArquivo(const AFileName: string): string;
+
 // Le o arquivo e devolve uma transacao por linha do extrato. AIgnorados recebe
 // quantos blocos vieram sem data ou sem valor - esses nao viram linha nenhuma.
 // Pode levantar excecao (arquivo nao existe, sem permissao, alem do tamanho):
@@ -282,6 +288,14 @@ begin
     if not (Result[i] in ['0'..'9']) then
       Exit;
   Result := Copy(Result, 1, 8);
+end;
+
+// Mesma leitura (e mesma decodificacao de encoding) da importacao, via o
+// proprio LerTextoUtf8: o chamador confere entao exatamente o texto que as
+// transacoes teriam - nada de abrir o arquivo com outra regua.
+function LerAcctIdDoArquivo(const AFileName: string): string;
+begin
+  Result := Trim(ExtrairTag('ACCTID', LerTextoUtf8(AFileName)));
 end;
 
 function LerOfx(const AFileName: string; out AIgnorados: Integer): TRegistrosOfx;
