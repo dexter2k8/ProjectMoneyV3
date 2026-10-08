@@ -20,7 +20,7 @@
         <ResourceBaseClass Value="Form"/>
         <UnitName Value="unitMoney"/>
         <IsVisibleTab Value="True"/>
-        <TopLine Value="105"/>
+        <TopLine Value="108"/>
         <CursorPos X="15" Y="113"/>
         <UsageCount Value="154"/>
         <Loaded Value="True"/>
@@ -32,6 +32,11 @@
         <EditorIndex Value="1"/>
         <UsageCount Value="126"/>
         <Loaded Value="True"/>
+      </Unit>
+      <Unit>
+        <Filename Value="unitOfx.pas"/>
+        <IsPartOfProject Value="True"/>
+        <UsageCount Value="20"/>
       </Unit>
     </Units>
     <JumpHistory HistoryIndex="13">

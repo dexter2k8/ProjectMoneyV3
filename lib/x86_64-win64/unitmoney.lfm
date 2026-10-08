@@ -73,6 +73,7 @@ object FormMoney: TFormMoney
       ChildSizing.ControlsPerLine = 100
       ClientHeight = 25
       ClientWidth = 241
+      DataSource = DataSourceExtratos
       Options = []
       TabOrder = 1
       Visible = False
@@ -97,6 +98,7 @@ object FormMoney: TFormMoney
       ItemHeight = 15
       Style = csDropDownList
       TabOrder = 0
+      OnChange = cbYearChange
     end
     object cbAccount: TComboBox
       Left = 13
@@ -108,6 +110,7 @@ object FormMoney: TFormMoney
       ItemHeight = 15
       Style = csDropDownList
       TabOrder = 1
+      OnChange = cbAccountChange
     end
     object lblTitle: TLabel
       Left = 237
@@ -402,13 +405,16 @@ object FormMoney: TFormMoney
     TabOrder = 4
   end
   object gridTrans: TDBGrid
-    Left = 64
-    Height = 232
-    Top = 88
-    Width = 736
+    Left = 0
+    Height = 448
+    Top = 74
+    Width = 860
+    Align = alClient
+    AutoFillColumns = True
     BorderSpacing.Top = 24
     Color = clWindow
     Columns = <>
+    DataSource = DataSourceExtratos
     TabOrder = 5
     Visible = False
   end
@@ -444,6 +450,7 @@ object FormMoney: TFormMoney
       Caption = 'Transações'
       object miImport: TMenuItem
         Caption = 'Importar OFC/OFX'
+        OnClick = miImportClick
       end
       object Separator1: TMenuItem
         Caption = '-'
@@ -517,6 +524,14 @@ object FormMoney: TFormMoney
     Left = 24
     Top = 288
   end
+  object dlgImportar: TOpenDialog
+    Title = 'Importar extrato (OFC/OFX)'
+    DefaultExt = '.ofx'
+    Filter = 'Extratos bancários (*.ofc;*.ofx)|*.ofc;*.ofx|Todos os arquivos (*.*)|*.*'
+    Options = [ofHideReadOnly, ofPathMustExist, ofFileMustExist, ofEnableSizing]
+    Left = 168
+    Top = 160
+  end
   object dlgNewDatabase: TSaveDialog
     Title = 'Novo Database'
     DefaultExt = '.db'
@@ -586,6 +601,26 @@ object FormMoney: TFormMoney
   object DataSourceSaldos: TDataSource
     DataSet = SQLQuerySaldos
     Left = 120
+    Top = 400
+  end
+  object SQLQueryExtratos: TSQLQuery
+    PacketRecords = -1
+    FieldDefs = <>
+    Database = SQLite3ConnContas
+    Transaction = SQLTransactionContas
+    SQL.Strings = (
+      'SELECT * FROM extratos ORDER BY dtposted, id;'
+      ''
+    )
+    Options = [sqoKeepOpenOnCommit, sqoAutoApplyUpdates, sqoAutoCommit]
+    Params = <>
+    Macros = <>
+    Left = 168
+    Top = 344
+  end
+  object DataSourceExtratos: TDataSource
+    DataSet = SQLQueryExtratos
+    Left = 168
     Top = 400
   end
 end

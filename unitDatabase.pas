@@ -5,7 +5,7 @@ unit unitDatabase;
 interface
 
 uses
-  Classes, SysUtils;
+  Classes, SysUtils, SQLDb, SQLite3Conn, unitOfx;
 
 const
   DatabaseFileName = 'banks.db';
@@ -17,16 +17,26 @@ procedure EnsureDatabase;
 // o arquivo incompleto. Se já existir, é substituído: quem confirma é o chamador.
 function NewDatabase(const AFileName: string): Boolean;
 // Confere se AFileName é um database do ProjectMoney: abre como SQLite e tem
-// as tabelas "contas" (aba tbContas) e "saldos" (aba tbSaldos) — as duas que
-// as queries da interface ligam ao arquivo.
+// as tabelas "contas" (aba tbContas), "extratos" (grade da tela de extratos)
+// e "saldos" (aba tbSaldos) — as três que as queries da interface ligam ao
+// arquivo.
 // Não cria nem altera arquivo e não mostra diálogo — False também para arquivo
 // inexistente/quebrado, e quem avisa o usuário é o chamador.
 function IsAccountsDatabase(const AFileName: string): Boolean;
+// Grava as transacoes lidas de um OFX/OFC na tabela "extratos" da conta
+// AAccountId. Usa a MESMA conexao/transacao que a interface ja' tem aberta:
+// uma conexao nova contra o mesmo arquivo brigaria com o lock do SQLite.
+// Uma linha so' entra se ainda nao existir (mesma conta, tipo, data, valor,
+// memo e cheque), entao reimportar o arquivo nao duplica nada.
+// Devolve quantas linhas entraram e, em ADuplicadas, quantas ja' estavam.
+// Erro de banco propaga: o dialogo e' do chamador (que tambem sabe o arquivo).
+function ImportarExtratos(AConn: TSQLite3Connection; AAccountId: Integer;
+  const ARegistros: TRegistrosOfx; out ADuplicadas: Integer): Integer;
 
 implementation
 
 uses
-  Dialogs, SQLDb, SQLite3Conn;
+  Dialogs;
 
 const
   SqlCreateBanks =
@@ -189,13 +199,15 @@ begin
       Query.Database := Conn;
       Query.Transaction := Trans;
       // O sqlite_master guarda cada tabela: procurar pelos nomes ali aceita
-      // qualquer formatação do CREATE TABLE. As DUAS tabelas que as queries
-      // da interface ligam têm de existir ("contas" na tbContas e "saldos"
-      // na tbSaldos), senão o arquivo não serve para a aplicação.
+      // qualquer formatação do CREATE TABLE. As TRÊS tabelas que as queries
+      // da interface ligam têm de existir ("contas" na tbContas, "extratos"
+      // na grade da tela de extratos e "saldos" na tbSaldos), senão o arquivo
+      // não serve para a aplicação.
       Query.SQL.Text := 'SELECT COUNT(*) FROM sqlite_master' +
-        ' WHERE type = ''table'' AND name IN (''contas'', ''saldos'');';
+        ' WHERE type = ''table'' AND name IN (''contas'', ''extratos'',' +
+        ' ''saldos'');';
       Query.Open;
-      Result := Query.Fields[0].AsInteger = 2;
+      Result := Query.Fields[0].AsInteger = 3;
       Query.Close;
     except
       // Arquivo que não é SQLite (ou está quebrado) estoura aqui.
@@ -205,6 +217,85 @@ begin
     Query.Free;
     Trans.Free;
     Conn.Free;
+  end;
+end;
+
+function ImportarExtratos(AConn: TSQLite3Connection; AAccountId: Integer;
+  const ARegistros: TRegistrosOfx; out ADuplicadas: Integer): Integer;
+var
+  consulta: TSQLQuery;
+  trans: TSQLTransaction;
+  i: Integer;
+  reg: TRegistroOfx;
+begin
+  Result := 0;
+  ADuplicadas := 0;
+  if Length(ARegistros) = 0 then
+    Exit;
+
+  trans := AConn.Transaction;
+  if trans = nil then
+    raise Exception.Create('A conexao nao tem transacao para gravar o extrato.');
+
+  consulta := TSQLQuery.Create(nil);
+  try
+    consulta.Database := AConn;
+    consulta.Transaction := trans;
+    try
+      for i := 0 to High(ARegistros) do
+      begin
+        reg := ARegistros[i];
+
+        // Ja' existe essa linha nessa conta? O valor e' comparado como
+        // numero: trnamt e' NUMERIC, entao o SQLite converte o texto da
+        // query ("12.340") antes de bater com o 12.34 gravado - e' o que
+        // faz a reimportacao nao duplicar mesmo com decimal a mais. Nos
+        // campos de texto a comparacao e' direta, e COALESCE cobre memo e
+        // chknum gravados como NULL por gravacao manual.
+        consulta.Close;
+        consulta.SQL.Text :=
+          'SELECT COUNT(*) FROM extratos WHERE account_id = ' +
+          IntToStr(AAccountId) + ' AND trntype = ' + QuotedStr(reg.TrnType) +
+          ' AND dtposted = ' + QuotedStr(reg.DtPosted) +
+          ' AND trnamt = ' + QuotedStr(reg.TrnAmt) +
+          ' AND COALESCE(memo, '''') = ' + QuotedStr(reg.Memo) +
+          ' AND COALESCE(chknum, '''') = ' + QuotedStr(reg.ChkNum) + ';';
+        consulta.Open;
+        if consulta.Fields[0].AsInteger > 0 then
+        begin
+          consulta.Close;
+          Inc(ADuplicadas);
+          Continue;
+        end;
+        consulta.Close;
+
+        // O valor entra como texto e a coluna NUMERIC converte na gravacao
+        // (a mesma regra da comparacao acima). Nao ha StrToFloat aqui de
+        // proposito: no pt-BR ele le "12.34" trocando ponto por virgula.
+        AConn.ExecuteDirect(
+          'INSERT INTO extratos (account_id, trntype, dtposted, trnamt,' +
+          ' memo, chknum) VALUES (' + IntToStr(AAccountId) + ', ' +
+          QuotedStr(reg.TrnType) + ', ' + QuotedStr(reg.DtPosted) + ', ' +
+          QuotedStr(reg.TrnAmt) + ', ' + QuotedStr(reg.Memo) + ', ' +
+          QuotedStr(reg.ChkNum) + ');', trans);
+        Inc(Result);
+      end;
+
+      // Uma transacao so' para a importacao inteira: ou entra tudo, ou nada.
+      // O Commit fecha o que a interface tem aberto nessa transacao (opcao
+      // sqoKeepOpenOnCommit mantem as queries ligadas), por isso o chamador
+      // recarrega os filtros e a grade depois daqui.
+      if trans.Active then
+        trans.Commit;
+    except
+      // Falha no meio: desfaz as linhas que ja tinham entrado para o
+      // extrato nao ficar pela metade.
+      if trans.Active then
+        trans.Rollback;
+      raise;
+    end;
+  finally
+    consulta.Free;
   end;
 end;
 

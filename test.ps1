@@ -18,7 +18,9 @@
     [8] Voltar SEM database -> devolve o estado vazio (so o menu); COM
         database aberto -> a interface fica (tbContas e tbSaldos ligadas as
         tabelas); "Fechar Database" volta a esconder
-    [9] Nenhum crash registrado no log de eventos do Windows (WER)
+    [9] Importar OFC/OFX (miImport) -> linhas novas entram em "extratos",
+        a reimportacao nao duplica e extrato em ANSI vira UTF-8 no arquivo
+    [10] Nenhum crash registrado no log de eventos do Windows (WER)
 
   Sai com código 0 quando tudo passa, 1 quando há alguma falha.
   As mensagens "arquivo(linha,col) severidade: mensagem" alimentam o
@@ -39,6 +41,8 @@ $dll    = Join-Path $root 'sqlite3.dll'
 $db     = Join-Path $root 'banks.db'
 $minewDb = Join-Path $root 'miNew-test.db'
 $lixoDb  = Join-Path $root 'lixo-test.db'
+$ofxUtf8 = Join-Path $root 'importa-test.ofx'
+$ofxAnsi = Join-Path $root 'importa-test-ansi.ofx'
 $passed = 0
 $failed = 0
 
@@ -344,6 +348,18 @@ function Get-Hash([string]$Path) {
     (Get-FileHash -Path $Path -Algorithm SHA256).Hash
 }
 
+# Le do .lfm o bloco "object <Objeto>" ate' o "end" da MESMA indentacao (o
+# .lfm nao aceita comentario, entao o fim do bloco e' o primeiro end' no nivel
+# do proprio objeto). Devolve '' quando o objeto nao esta' no arquivo.
+function Get-LfmBlock([string]$Texto, [string]$Objeto) {
+    if ($Texto -eq '') { return '' }
+    $padrao = '(?ms)^([ \t]*)object ' + [regex]::Escape($Objeto) +
+        '.*?^\1end[ \t]*\r?$'
+    $m = [regex]::Match($Texto, $padrao)
+    if (-not $m.Success) { return '' }
+    return $m.Value
+}
+
 # Grava N linhas em "saldos" (a tabela da tbSaldos) direto no arquivo: e' o
 # que a grade da pagina tem de mostrar depois de abrir o database. O arquivo
 # tem de estar LIVRE (conexao encerrada). Devolve as linhas gravadas (0 =
@@ -358,6 +374,26 @@ function Add-SaldosRows([string]$Path, [int]$Count) {
     # Le do proprio arquivo o numero de linhas que ficou: devolver o pedido sem
     # conferir esconderia um INSERT que nao deu certo.
     return [Sq]::Consultar($Path, 'SELECT COUNT(*) FROM saldos;')
+}
+
+# Grava N linhas em "extratos" (a tabela da grade da tela de extratos) datadas
+# do ano informado: e' o que o combo de ano da tela tem de listar e o que o
+# filtro do ano selecionado tem de deixar passar. O arquivo tem de estar LIVRE
+# (conexao encerrada). Devolve as linhas gravadas DESSE ano (0 = arquivo
+# ausente/falhou - quem reporta e' o chamador).
+function Add-ExtratosRows([string]$Path, [int]$Count, [string]$Ano) {
+    if (-not (Test-Path $Path)) { return 0 }
+    # Mesmo truque do INSERT com CTE recursivo: uma sentenca so'.
+    $sql = 'WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c' +
+        ' WHERE x < ' + $Count + ') INSERT INTO "extratos"' +
+        " (account_id, trntype, dtposted, trnamt, memo)" +
+        " SELECT 1, 'DEBIT', '" + $Ano + "-06-15', -x * 1.5, 'linha ' || x FROM c;"
+    if ([Sq]::Executar($Path, $sql) -le 0) { return 0 }
+    # Conta com a MESMA expressao do ano que a aplicacao usa no filtro: se o
+    # texto gravado nao casar com substr(dtposted,1,4), a checagem falha aqui.
+    return [Sq]::Consultar($Path,
+        "SELECT COUNT(*) FROM extratos WHERE substr(dtposted, 1, 4) = '" +
+        $Ano + "';")
 }
 
 # Le o arquivo: so' funciona com a conexao ENCERRADA, porque o SQLite mantem
@@ -448,6 +484,43 @@ function Wait-Interface([IntPtr]$Main, [bool]$Esperado) {
         $vis = @([UiTest]::Visible($Main))
     }
     return $vis
+}
+
+# Importa um arquivo de extrato pelo menu "Importar OFC/OFX" e devolve o
+# dialogo de resultado (MessageDlg) aberto, ou Zero quando algo travou no
+# meio do caminho. O chamador fecha o dialogo com WM_CLOSE. A sequencia e'
+# a mesma de miOpen: menu -> dialogo de arquivo -> nome -> esperar fechar ->
+# esperar o aviso aparecer (nao pode ser lido junto com o dialogo de arquivo).
+function Invoke-Importar($Process, [string]$Arquivo) {
+    $dlg = Invoke-MenuFileDialog $Process 'Importar OFC/OFX'
+    if ($dlg -eq [IntPtr]::Zero) { return [IntPtr]::Zero }
+    $edit = Set-FileDialogName $dlg $Arquivo
+    if ($edit -eq [IntPtr]::Zero) { return [IntPtr]::Zero }
+    if (-not (Wait-DialogClosed $dlg)) { return [IntPtr]::Zero }
+    Wait-Warning ([uint32]$Process.Id)
+}
+
+# Acha um combo da tela de extratos pela LARGURA (cbAccount = 212, cbYear =
+# 100): os dois sao LCLComboBox e o id do controle muda a cada execucao, entao
+# a geometria e' o unico jeito estavel de separar um do outro. A tela tem de
+# estar revelada: sem database e fora da pagina de extratos os dois somem.
+# Devolve o HWND (Zero quando nao achou).
+function Find-ComboHwnd([IntPtr]$Main, [int]$Largura) {
+    foreach ($w in @([UiTest]::Visible($Main))) {
+        if (($w -match '^LCLComboBox') -and
+            ($w -match (' ' + $Largura + 'x[0-9]+$')) -and
+            ($w -match 'id=(\d+)')) {
+            return [IntPtr][int64]$Matches[1]
+        }
+    }
+    return [IntPtr]::Zero
+}
+
+# Quantas linhas o combo tem (CB_GETCOUNT = 0x0146). Devolve -1 quando o combo
+# nao foi achado: assim "0 itens" nunca passa por falta de HWND.
+function Get-ComboCount([IntPtr]$Combo) {
+    if ($Combo -eq [IntPtr]::Zero) { return -1 }
+    [int64][UiTest]::Msg($Combo, 0x0146, [IntPtr]::Zero, [IntPtr]::Zero)
 }
 
 # Acha o painel inferior com o botao "Voltar" entre as janelas NOVAS (em
@@ -561,7 +634,7 @@ if ($dbExisted) {
 
 try {
     # ------------------------------------------------ [1] compilação/lint
-    Write-Banner '[1/9] Compilacao e lint (lazbuild -B)'
+    Write-Banner '[1/10] Compilacao e lint (lazbuild -B)'
     if ($SkipLint) {
         Write-Output '   (pulado por -SkipLint)'
     }
@@ -583,8 +656,31 @@ try {
     Check 'executavel projectMoney.exe existe' (Test-Path $exe)
     Check 'sqlite3.dll existe' (Test-Path $dll)
 
+    # O vinculo da grade e do navigator com "extratos" nao tem efeito visual
+    # que a suite consiga ler (gridTrans nasce oculto e o DBNavTrans esta' sem
+    # botoes), entao a prova fica no .lfm: e' ali que o DataSource esta'
+    # escrito - e um .lfm errado compila igual.
+    $lfmTexto = ''
+    $lfmPath = Join-Path $root 'unitmoney.lfm'
+    if (Test-Path $lfmPath) { $lfmTexto = [IO.File]::ReadAllText($lfmPath) }
+    Check 'unitmoney.lfm lido' ($lfmTexto -ne '') $lfmPath
+    $blocoGrid = Get-LfmBlock $lfmTexto 'gridTrans: TDBGrid'
+    $blocoNav  = Get-LfmBlock $lfmTexto 'DBNavTrans: TDBNavigator'
+    $detGrid = 'DataSource ausente no bloco gridTrans'
+    if ($blocoGrid -eq '') { $detGrid = 'bloco gridTrans nao encontrado no .lfm' }
+    $detNav = 'DataSource ausente no bloco DBNavTrans'
+    if ($blocoNav -eq '') { $detNav = 'bloco DBNavTrans nao encontrado no .lfm' }
+    Check 'gridTrans ligado a DataSourceExtratos (.lfm)' (
+        $blocoGrid.Contains('DataSource = DataSourceExtratos')) $detGrid
+    Check 'DBNavTrans ligado a DataSourceExtratos (.lfm)' (
+        $blocoNav.Contains('DataSource = DataSourceExtratos')) $detNav
+    Check 'combos de filtro com OnChange (.lfm)' (
+        ($lfmTexto -match 'OnChange = cbAccountChange') -and
+        ($lfmTexto -match 'OnChange = cbYearChange')) (
+        'cbAccountChange e/ou cbYearChange ausentes')
+
     # ------------------------------------------------ [2] cria o banco
-    Write-Banner '[2/9] Sem banks.db -> deve criar o arquivo'
+    Write-Banner '[2/10] Sem banks.db -> deve criar o arquivo'
     if (Test-Path $db) { Remove-Item $db -Force }
     $r = Invoke-App $RunSeconds
     Test-NoCrash $r 'aplicacao permanece viva (sem crash)'
@@ -598,7 +694,7 @@ try {
     }
 
     # ------------------------------------------------ [3] já existe
-    Write-Banner '[3/9] Com banks.db -> nao deve recriar nem alterar'
+    Write-Banner '[3/10] Com banks.db -> nao deve recriar nem alterar'
     if (Test-Path $db) {
         $hashBefore = Get-Hash $db
         $r = Invoke-App $RunSeconds
@@ -610,7 +706,7 @@ try {
     }
 
     # ------------------------------------------------ [4] DLL ausente
-    Write-Banner '[4/9] Sem sqlite3.dll -> erro deve ser tratado'
+    Write-Banner '[4/10] Sem sqlite3.dll -> erro deve ser tratado'
     if ($SkipDllTest) {
         Write-Output '   (pulado por -SkipDllTest)'
     }
@@ -639,7 +735,7 @@ try {
     }
 
     # ------------------------------------------------ [5] miNew -> database
-    Write-Banner '[5/9] Novo Database (miNew) -> cria .db com as 3 tabelas'
+    Write-Banner '[5/10] Novo Database (miNew) -> cria .db com as 3 tabelas'
     if (Test-Path $minewDb) { Remove-Item $minewDb -Force -ErrorAction SilentlyContinue }
     $pNovo = $null
     # Qualquer excecao no fluxo tem de virar FALHA: se escapasse em silencio,
@@ -730,7 +826,7 @@ try {
     }
 
     # ------------------------------------------------ [6] miOpen -> abrir .db
-    Write-Banner '[6/9] Abrir Database (miOpen) -> abre o valido e rejeita o invalido'
+    Write-Banner '[6/10] Abrir Database (miOpen) -> abre o valido e rejeita o invalido'
     $pAbrir  = $null
     $hashAbr = $null
     # O passo [4] apaga banks.db e ele so' e recriado no passo final: garante o
@@ -770,6 +866,17 @@ try {
             $visAbr = @(Wait-Interface $mainAbrir $true)
             Check 'interface revelada apos o miOpen' ($visAbr.Count -gt 0) (
                 'janelas=' + $visAbr.Count)
+            # Combos de filtro da tela de extratos: "contas" e "extratos" estao
+            # vazias neste ponto (database recem-criado no passo [5]), entao e'
+            # aqui que a regra do "ano atual" e a lista de contas aparecem.
+            $cbConta6 = Find-ComboHwnd $mainAbrir 212
+            $cbAno6   = Find-ComboHwnd $mainAbrir 100
+            $nConta6  = Get-ComboCount $cbConta6
+            $nAno6    = Get-ComboCount $cbAno6
+            Check 'cbYear lista o ano atual ("extratos" vazio)' ($nAno6 -eq 1) (
+                'combo=' + $cbAno6 + ' itens=' + $nAno6)
+            Check 'cbAccount sem itens ("contas" vazia)' ($nConta6 -eq 0) (
+                'combo=' + $cbConta6 + ' itens=' + $nConta6)
             $pAbrir.Refresh()
             Check 'aplicacao permanece viva (sem crash)' (-not $pAbrir.HasExited)
         }
@@ -837,7 +944,7 @@ try {
     }
 
     # ------------------------------------------------ [7] miClose -> fechar
-    Write-Banner '[7/9] Fechar Database (miClose) -> encerra a conexao com o arquivo'
+    Write-Banner '[7/10] Fechar Database (miClose) -> encerra a conexao com o arquivo'
     $pFecha = $null
     # Mesma protecao dos passos de interface: excecao tem de virar FALHA.
     $ErrorActionPreference = 'Stop'
@@ -955,7 +1062,7 @@ try {
     }
 
     # ---------------- [8] miList/miGerCon/miGerSal -> tbBancos/tbContas/tbSaldos
-    Write-Banner '[8/9] Voltar sem database -> estado vazio; com database -> fica'
+    Write-Banner '[8/10] Voltar sem database -> estado vazio; com database -> fica'
     $pNav = $null
     # Mesma protecao do passo do miNew: excecao tem de virar FALHA.
     $ErrorActionPreference = 'Stop'
@@ -966,6 +1073,14 @@ try {
         $nLinhas = Add-SaldosRows $minewDb 150
         Check 'linhas de teste gravadas em "saldos" (passo [8])' ($nLinhas -eq 150) (
             'linhas=' + $nLinhas)
+        # Mesma prova para a tela de extratos: dois anos em "extratos" (75 +
+        # 75) para o combo de ano listar os dois e o filtro abrir com o ano
+        # mais antigo selecionado.
+        $n2025 = Add-ExtratosRows $minewDb 75 '2025'
+        $n2026 = Add-ExtratosRows $minewDb 75 '2026'
+        Check 'linhas de teste gravadas em "extratos" (passo [8])' (
+            ($n2025 -eq 75) -and ($n2026 -eq 75)) (
+            '2025=' + $n2025 + ' 2026=' + $n2026)
 
         $pNav = Start-Process -FilePath $exe -WorkingDirectory $root -PassThru
         Start-Sleep -Seconds 3
@@ -1034,6 +1149,26 @@ try {
             $visAb8 = @(Wait-Interface $mainNav $true)
             Check 'interface revelada apos o miOpen (sem navegar)' (
                 $visAb8.Count -gt 0) ('janelas=' + $visAb8.Count)
+
+            # 150 linhas em "extratos" (75 de 2025 + 75 de 2026): o combo de
+            # ano tem de listar as duas e comecar na mais antiga - e' ele que
+            # alimenta o filtro da query da grade. "contas" segue vazia, entao
+            # o combo de conta continua sem nenhuma linha.
+            $cbAno8   = Find-ComboHwnd $mainNav 100
+            $cbConta8 = Find-ComboHwnd $mainNav 212
+            $nAno8    = Get-ComboCount $cbAno8
+            $nConta8  = Get-ComboCount $cbConta8
+            $selAno8  = -1
+            if ($cbAno8 -ne [IntPtr]::Zero) {
+                $selAno8 = [int64][UiTest]::Msg($cbAno8, 0x0147,  # CB_GETCURSEL
+                    [IntPtr]::Zero, [IntPtr]::Zero)
+            }
+            Check 'cbYear lista os 2 anos de "extratos"' ($nAno8 -eq 2) (
+                'combo=' + $cbAno8 + ' itens=' + $nAno8)
+            Check 'cbYear comeca no ano mais antigo (selecao 0)' ($selAno8 -eq 0) (
+                'combo=' + $cbAno8 + ' selecao=' + $selAno8)
+            Check 'cbAccount sem itens ("contas" vazia, passo [8])' (
+                $nConta8 -eq 0) ('combo=' + $cbConta8 + ' itens=' + $nConta8)
 
             # Com database o menu "Transacoes" volta a funcionar todo - e o
             # "Gerenciar Contas" volta a ser navegavel (e' ele o proximo passo).
@@ -1147,8 +1282,278 @@ try {
         }
     }
 
-    # ------------------------------------------------ [9] estado final + WER
-    Write-Banner '[9/9] Estado final e log de crashes do Windows'
+    # ------------------------------------ [9] importar OFC/OFX (miImport)
+    Write-Banner '[9/10] Importar OFC/OFX -> linhas novas entram em "extratos"'
+    $pImp  = $null
+    $antes = 0
+    # Mesma protecao dos demais passos: excecao tem de virar FALHA.
+    $ErrorActionPreference = 'Stop'
+    try {
+        # O miImport grava na conta escolhida no combo e "extratos" exige
+        # account_id NOT NULL: o passo [8] deixou "contas" vazia, entao a
+        # conta destino e' criada aqui - com o arquivo LIVRE (nenhuma conexao
+        # aberta em cima dele, o app ainda nem subiu).
+        $sqlConta = 'INSERT INTO contas (acctid, accttype, bankid, branchid,' +
+            ' description) VALUES (''4321'', ''CHECKING'', 1, ''0001'',' +
+            ' ''Conta de teste'');'
+        Check 'conta de destino gravada (passo [9])' (
+            [Sq]::Executar($minewDb, $sqlConta) -eq 1)
+        $antes = [Sq]::Consultar($minewDb, 'SELECT COUNT(*) FROM extratos;')
+        Check 'extratos lido antes da importacao' ($antes -eq 150) ('qtd=' + $antes)
+
+        # Extrato OFX 1.x em SGML (tag sem fechamento, valor terminando na
+        # quebra de linha) com texto UTF-8 mas cabecalho afirmando CHARSET:1252:
+        # a leitura decide pelo CONTEUDO, nao pelo que o arquivo declara. Os
+        # registros cobrem o ano que ja existe (2025), um ano novo (2024), data
+        # com hora+fuso (sobram os 8 primeiros digitos), um registro fechado no
+        # estilo XML e um bloco incompleto (sem TRNAMT: nao pode virar linha).
+        $memoAcento = 'Mercado S' + [char]0x00E3 + 'o Jo' + [char]0x00E3 + 'o'
+        $ofxLinhas = @(
+            'OFXHEADER:100'
+            'DATA:20240101000000'
+            'VERSION:102'
+            'SECURITY:NONE'
+            'ENCODING:USASCII'
+            'CHARSET:1252'
+            '<OFX>'
+            '<BANKMSGSRSV1>'
+            '<STMTTRNRS>'
+            '<STMTRS>'
+            '<CURDEF>BRL'
+            '<BANKACCTFROM>'
+            '<BANKID>001'
+            '<ACCTID>4321'
+            '<ACCTTYPE>CHECKING'
+            '</BANKACCTFROM>'
+            '<BANKTRANLIST>'
+            '<DTSTART>20240101'
+            '<DTEND>20261231'
+            '<STMTTRN>'
+            '<TRNTYPE>DEBIT'
+            '<DTPOSTED>20240115'
+            '<TRNAMT>-123.45'
+            '<FITID>f1'
+            '<CHECKNUM>101'
+            '<MEMO>Pagamento de luz'
+            '</STMTTRN>'
+            '<STMTTRN>'
+            '<TRNTYPE>CREDIT'
+            '<DTPOSTED>20240220'
+            '<TRNAMT>1500.00'
+            '<FITID>f2'
+            '<MEMO>Salario de fevereiro'
+            '</STMTTRN>'
+            '<STMTTRN>'
+            '<TRNTYPE>DEBIT'
+            '<DTPOSTED>20250305120000.000[-5:EST]'
+            '<TRNAMT>-9.90'
+            '<FITID>f3'
+            '<MEMO>' + $memoAcento
+            '</STMTTRN>'
+            '<STMTTRN>'
+            '<TRNTYPE>DEBIT</TRNTYPE>'
+            '<DTPOSTED>20250410</DTPOSTED>'
+            '<TRNAMT>-55.00</TRNAMT>'
+            '<MEMO>Registro em formato XML</MEMO>'
+            '</STMTTRN>'
+            '<STMTTRN>'
+            '<TRNTYPE>DEBIT'
+            '<DTPOSTED>20250520'
+            '<MEMO>blocos sem valor nao viram linha'
+            '</STMTTRN>'
+            '</BANKTRANLIST>'
+            '</STMTRS>'
+            '</STMTTRNRS>'
+            '</BANKMSGSRSV1>'
+            '</OFX>'
+        )
+        [IO.File]::WriteAllText($ofxUtf8, ($ofxLinhas -join "`r`n") + "`r`n")
+
+        # O MESMO extrato, mas em Windows-1252 puro (o jeito antigo dos
+        # bancos): o byte do acento quebra o UTF-8 e o parser tem de
+        # converte-lo para gravar UTF-8 no banco.
+        $memoAnsi = 'Padaria S' + [char]0x00E3 + 'o Jos' + [char]0x00E9
+        $ofxAnsiLinhas = @(
+            'OFXHEADER:100'
+            'DATA:20240101000000'
+            'VERSION:102'
+            'SECURITY:NONE'
+            'ENCODING:USASCII'
+            'CHARSET:1252'
+            '<OFX>'
+            '<BANKMSGSRSV1>'
+            '<STMTTRNRS>'
+            '<STMTRS>'
+            '<CURDEF>BRL'
+            '<BANKACCTFROM>'
+            '<BANKID>001'
+            '<ACCTID>4321'
+            '<ACCTTYPE>CHECKING'
+            '</BANKACCTFROM>'
+            '<BANKTRANLIST>'
+            '<STMTTRN>'
+            '<TRNTYPE>DEBIT'
+            '<DTPOSTED>20240310'
+            '<TRNAMT>-12.34'
+            '<MEMO>' + $memoAnsi
+            '</STMTTRN>'
+            '</BANKTRANLIST>'
+            '</STMTRS>'
+            '</STMTTRNRS>'
+            '</BANKMSGSRSV1>'
+            '</OFX>'
+        )
+        $enc1252 = [Text.Encoding]::GetEncoding(1252)
+        [IO.File]::WriteAllBytes($ofxAnsi,
+            $enc1252.GetBytes(($ofxAnsiLinhas -join "`r`n") + "`r`n"))
+        Check 'fixture OFX (UTF-8 e ANSI) gravada' (
+            (Test-Path $ofxUtf8) -and (Test-Path $ofxAnsi))
+
+        # Abre o database: e' o miOpen que carrega as combos de filtro.
+        $pImp = Start-Process -FilePath $exe -WorkingDirectory $root -PassThru
+        Start-Sleep -Seconds 3
+        $pImp.Refresh()
+        $mainImp = $pImp.MainWindowHandle
+        Check 'aplicacao abriu para o passo [9]' ($mainImp -ne [IntPtr]::Zero)
+        $dlgOpenImp = Invoke-MenuFileDialog $pImp 'Abrir Database'
+        Check 'dialogo "Abrir" abriu (passo [9])' ($dlgOpenImp -ne [IntPtr]::Zero)
+        if ($dlgOpenImp -ne [IntPtr]::Zero) {
+            $editOpenImp = Set-FileDialogName $dlgOpenImp $minewDb
+            Check 'campo de nome do arquivo encontrado (passo [9])' (
+                $editOpenImp -ne [IntPtr]::Zero)
+            Check 'dialogo "Abrir" fechou ao confirmar (passo [9])' (
+                Wait-DialogClosed $dlgOpenImp)
+            # A conexao abre depois que o dialogo some: um aviso aqui ficaria
+            # pendente e enganaria o Invoke-Importar (mesmo #32770).
+            $avisoImp = [IntPtr]::Zero
+            for ($t = 0; ($t -lt 12) -and ($avisoImp -eq [IntPtr]::Zero); $t++) {
+                Start-Sleep -Milliseconds 250
+                $avisoImp = [UiTest]::FindDialog([uint32]$pImp.Id)
+            }
+            Check 'nenhum aviso ao abrir o database (passo [9])' (
+                $avisoImp -eq [IntPtr]::Zero) ('hwnd=' + $avisoImp)
+        }
+        $visImp = @(Wait-Interface $mainImp $true)
+        Check 'interface revelada para importar' ($visImp.Count -gt 0) (
+            'janelas=' + $visImp.Count)
+
+        # Estado inicial das combos: 1 conta (a criada acima) e os 2 anos que
+        # ja estao em "extratos" (2025 e 2026, do passo [8]).
+        $cbContaA = Find-ComboHwnd $mainImp 212
+        $cbAnoA   = Find-ComboHwnd $mainImp 100
+        $nContaA  = Get-ComboCount $cbContaA
+        $nAnoA    = Get-ComboCount $cbAnoA
+        Check 'cbAccount lista a conta de destino' ($nContaA -eq 1) (
+            'combo=' + $cbContaA + ' itens=' + $nContaA)
+        Check 'cbYear lista 2 anos antes da importacao' ($nAnoA -eq 2) (
+            'combo=' + $cbAnoA + ' itens=' + $nAnoA)
+
+        # 1a importacao: 4 registros validos entram, o bloco sem TRNAMT nao.
+        $dlgImp1 = Invoke-Importar $pImp $ofxUtf8
+        Check 'dialogo de resultado da 1a importacao' ($dlgImp1 -ne [IntPtr]::Zero)
+        if ($dlgImp1 -ne [IntPtr]::Zero) {
+            [void][UiTest]::PostMessage($dlgImp1, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)  # WM_CLOSE
+            Check 'resultado da 1a importacao dispensado' (
+                Wait-DialogClosed $dlgImp1)
+        }
+        $pImp.Refresh()
+        Check 'aplicacao viva apos a 1a importacao' (-not $pImp.HasExited)
+
+        # Depois do resultado as combos ja foram recarregadas: 2024 entrou na
+        # lista (4a linha da fixture) e a selecao tem de voltar para o ano que
+        # o usuario tinha escolhido (2025 = indice 1 depois que 2024 entra).
+        $cbContaB = Find-ComboHwnd $mainImp 212
+        $cbAnoB   = Find-ComboHwnd $mainImp 100
+        $nContaB  = Get-ComboCount $cbContaB
+        $nAnoB    = Get-ComboCount $cbAnoB
+        $selAnoB  = [int64][UiTest]::Msg($cbAnoB, 0x0147, [IntPtr]::Zero, [IntPtr]::Zero)
+        Check 'cbAccount continua com a conta de destino' ($nContaB -eq 1) (
+            'itens=' + $nContaB)
+        Check 'cbYear passou a listar 3 anos (2024 veio do arquivo)' (
+            $nAnoB -eq 3) ('itens=' + $nAnoB)
+        Check 'cbYear manteve a selecao do usuario (indice 1 = 2025)' (
+            $selAnoB -eq 1) ('sel=' + $selAnoB)
+
+        # Reimportar o MESMO arquivo nao pode duplicar: as 4 linhas ja existem.
+        $dlgImp2 = Invoke-Importar $pImp $ofxUtf8
+        Check 'dialogo de resultado da reimportacao' ($dlgImp2 -ne [IntPtr]::Zero)
+        if ($dlgImp2 -ne [IntPtr]::Zero) {
+            [void][UiTest]::PostMessage($dlgImp2, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)  # WM_CLOSE
+            Check 'resultado da reimportacao dispensado' (
+                Wait-DialogClosed $dlgImp2)
+        }
+        $cbAnoC = Find-ComboHwnd $mainImp 100
+        Check 'cbYear inalterado apos a reimportacao' (
+            (Get-ComboCount $cbAnoC) -eq 3) ('itens=' + (Get-ComboCount $cbAnoC))
+
+        # Extrato em ANSI: o parser tem de converte-los para UTF-8. O ano e'
+        # 2024 (ja existia), entao a lista de anos nao muda.
+        $dlgImp3 = Invoke-Importar $pImp $ofxAnsi
+        Check 'dialogo de resultado da importacao ANSI' ($dlgImp3 -ne [IntPtr]::Zero)
+        if ($dlgImp3 -ne [IntPtr]::Zero) {
+            [void][UiTest]::PostMessage($dlgImp3, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)  # WM_CLOSE
+            Check 'resultado da importacao ANSI dispensado' (
+                Wait-DialogClosed $dlgImp3)
+        }
+        $cbAnoD = Find-ComboHwnd $mainImp 100
+        Check 'cbYear segue com 3 anos (2024 ja existia no arquivo)' (
+            (Get-ComboCount $cbAnoD) -eq 3) ('itens=' + (Get-ComboCount $cbAnoD))
+        $pImp.Refresh()
+        Check 'aplicacao viva ao fim das importacoes' (-not $pImp.HasExited)
+    }
+    catch {
+        Check 'fluxo do miImport sem excecao' $false $_.Exception.Message
+    }
+    finally {
+        $ErrorActionPreference = 'Continue'
+        if ($pImp -and -not $pImp.HasExited) {
+            try { $pImp.Kill(); $pImp.WaitForExit() } catch { }
+        }
+    }
+
+    # Conferencia no arquivo: so' funciona com a conexao encerrada (app morta).
+    # 5 linhas novas no total (4 do UTF-8 + 1 do ANSI) e nada duplicado.
+    if (-not (Test-Path $minewDb)) {
+        Check 'miNew-test.db disponivel para a conferencia final' $false (
+            'arquivo ausente')
+    }
+    else {
+        $depois = [Sq]::Consultar($minewDb, 'SELECT COUNT(*) FROM extratos;')
+        Check 'importacao gravou 5 linhas e a reimportacao nao duplicou' (
+            $depois -eq ($antes + 5)) ('antes=' + $antes + ' depois=' + $depois)
+        Check 'data com hora+fuso virou os 8 primeiros digitos' (
+            [Sq]::Consultar($minewDb,
+                "SELECT COUNT(*) FROM extratos WHERE dtposted = '20250305';"
+            ) -eq 1)
+        Check 'registro no estilo XML gravado' (
+            [Sq]::Consultar($minewDb,
+                "SELECT COUNT(*) FROM extratos WHERE dtposted = '20250410';"
+            ) -eq 1)
+        Check 'CHECKNUM virou chknum' (
+            [Sq]::Consultar($minewDb,
+                "SELECT COUNT(*) FROM extratos WHERE chknum = '101';") -eq 1)
+        Check 'memo do SGML gravado' (
+            [Sq]::Consultar($minewDb,
+                "SELECT COUNT(*) FROM extratos WHERE memo = 'Pagamento de luz';"
+            ) -eq 1)
+        Check 'valor numerico gravado' (
+            [Sq]::Consultar($minewDb,
+                'SELECT COUNT(*) FROM extratos WHERE trnamt = -123.45;') -eq 1)
+        # O Sq le o .db com charset ANSI: acento so' se confere nos BYTES do
+        # arquivo (em UTF-8), que e' o formato gravado pelo parser.
+        $textoDb = [Text.Encoding]::UTF8.GetString(
+            [IO.File]::ReadAllBytes($minewDb))
+        $temUtf8 = ($null -ne $memoAcento) -and $textoDb.Contains(
+            [string]$memoAcento)
+        Check 'memo acentuado do arquivo UTF-8 gravado em UTF-8' $temUtf8
+        $temAnsi = ($null -ne $memoAnsi) -and $textoDb.Contains(
+            [string]$memoAnsi)
+        Check 'memo acentuado do arquivo ANSI (1252) convertido p/ UTF-8' (
+            $temAnsi)
+    }
+
+    # ------------------------------------------------ [10] estado final + WER
+    Write-Banner '[10/10] Estado final e log de crashes do Windows'
     if (-not (Test-Path $db)) {
         $null = Invoke-App $RunSeconds   # recria o banco para deixar o ambiente utilizavel
     }
@@ -1178,6 +1583,13 @@ finally {
     # arquivo invalido do teste do "Abrir Database"
     if (Test-Path $lixoDb) {
         Remove-Item $lixoDb -Force -ErrorAction SilentlyContinue
+    }
+    # extratos de teste do miImport (UTF-8 e ANSI, nomes do proprio teste)
+    if (Test-Path $ofxUtf8) {
+        Remove-Item $ofxUtf8 -Force -ErrorAction SilentlyContinue
+    }
+    if (Test-Path $ofxAnsi) {
+        Remove-Item $ofxAnsi -Force -ErrorAction SilentlyContinue
     }
 }
 

@@ -62,6 +62,9 @@ type
     // Database novo/aberto (menu "Novo Database" / "Abrir Database") -> aba
     // tbContas: mesma cadeia conexão -> transaction -> query -> datasource da
     // aba tbBancos; os dois menus só trocam o arquivo dessa mesma cadeia.
+    // Extrato (miImport): arquivo OFC/OFX escolhido pelo usuario - o
+    // conteudo vai para a tabela "extratos", na conta selecionada na tela.
+    dlgImportar: TOpenDialog;
     dlgNewDatabase: TSaveDialog;
     dlgOpenDatabase: TOpenDialog;
     SQLite3ConnContas: TSQLite3Connection;
@@ -70,6 +73,10 @@ type
     DataSourceContas: TDataSource;
     SQLQuerySaldos: TSQLQuery;
     DataSourceSaldos: TDataSource;
+    // Extratos (tela de extratos): mesma conexão das contas/saldos; a grade
+    // gridTrans e o navegador DBNavTrans ligam-se a ela por este DataSource.
+    SQLQueryExtratos: TSQLQuery;
+    DataSourceExtratos: TDataSource;
     tbContas: TTabSheet;
     toggleShowControls: TToggleBox;
     tsAnterior: TStaticText;
@@ -89,10 +96,13 @@ type
     tbJan: TTabSheet;
     tslblAnterior: TStaticText;
     txtSaldo: TLabel;
+    procedure cbAccountChange(Sender: TObject);
+    procedure cbYearChange(Sender: TObject);
     procedure FormCreate(Sender: TObject);
     procedure miCloseClick(Sender: TObject);
     procedure miGerConClick(Sender: TObject);
     procedure miGerSalClick(Sender: TObject);
+    procedure miImportClick(Sender: TObject);
     procedure miListClick(Sender: TObject);
     procedure miNewClick(Sender: TObject);
     procedure miOpenClick(Sender: TObject);
@@ -119,6 +129,12 @@ type
     // Aplica o estado acima de uma vez: visibilidade da página + enable do
     // "Fechar Database" (sem database aberto não há nada para fechar).
     procedure AtualizarEstadoDatabase;
+    // Combos de filtro da tela de extratos (conta e ano): montadas por
+    // miNew/miOpen a partir do database aberto, refazem a query da grade
+    // quando o usuário troca de seleção e são esvaziadas ao fechar.
+    procedure CarregarFiltrosExtratos;
+    procedure AplicarFiltroExtratos;
+    procedure LimparFiltrosExtratos;
 
   public
 
@@ -130,11 +146,34 @@ var
 implementation
 
 uses
-  unitDatabase;
+  unitDatabase, unitOfx;
 
 {$R *.lfm}
 
 { TFormMoney }
+
+// "1 registro" / "2 registros": evita "registro(s)" na mensagem de resultado.
+function Plural(AN: Integer; const ASingular, APlural: string): string;
+begin
+  if AN = 1 then
+    Result := ASingular
+  else
+    Result := APlural;
+end;
+
+procedure TFormMoney.cbAccountChange(Sender: TObject);
+begin
+  // Trocou a conta escolhida na tela de extratos: a query da grade reabre já
+  // filtrada pela conta nova (sem database aberto não há o que fazer, e é
+  // esse o caminho do OnChange que a limpeza das combos dispara).
+  AplicarFiltroExtratos;
+end;
+
+procedure TFormMoney.cbYearChange(Sender: TObject);
+begin
+  // Mesmo caminho do cbAccountChange: mudou o ano, refaz o filtro da grade.
+  AplicarFiltroExtratos;
+end;
 
 procedure TFormMoney.FormCreate(Sender: TObject);
 begin
@@ -263,12 +302,145 @@ var
 begin
   aberto := DatabaseAberto;
   SetInterfaceVisible(aberto);
+  // Sem database as combos de filtro ficam sem itens: não há o que escolher
+  // e não pode sobrar lista do arquivo que estava aberto antes.
+  if not aberto then
+    LimparFiltrosExtratos;
   // Sem database aberto não há nada para fechar: o item fica desativado.
   miClose.Enabled := aberto;
   // Todo o menu "Transações" (importar, exportar, gerenciar) opera sobre o
   // database de contas: sem ligação, não há transações a fazer. Desativar o
   // menu de primeiro nível cobre os itens de uma vez - inclusive os futuros.
   mmTransactions.Enabled := aberto;
+end;
+
+procedure TFormMoney.CarregarFiltrosExtratos;
+var
+  consulta: TSQLQuery;
+  idConta, ano: Integer;
+  texto, descricao: string;
+begin
+  if not DatabaseAberto then
+    Exit;
+
+  // Esvazia as duas antes de montar: um OnChange no meio do caminho não
+  // pode reabrir a query com conta ou ano herdados do database anterior.
+  cbAccount.Items.Clear;
+  cbYear.Items.Clear;
+
+  // Conta: a query da tbContas já está aberta, então é só percorrê-la —
+  // uma linha por registro, com o "id" guardado em Items.Objects (é o
+  // account_id dos extratos). O texto junta o número da conta e a
+  // descrição; sem nada usável, fica a identificação interna.
+  SQLQueryContas.First;
+  while not SQLQueryContas.EOF do
+  begin
+    idConta := SQLQueryContas.FieldByName('id').AsInteger;
+    texto := Trim(SQLQueryContas.FieldByName('acctid').AsString);
+    descricao := Trim(SQLQueryContas.FieldByName('description').AsString);
+    if descricao <> '' then
+    begin
+      if texto <> '' then
+        texto := texto + ' - ';
+      texto := texto + descricao;
+    end;
+    if texto = '' then
+      texto := 'Conta ' + IntToStr(idConta);
+    cbAccount.Items.AddObject(texto, TObject(PtrInt(idConta)));
+    SQLQueryContas.Next;
+  end;
+  if cbAccount.Items.Count > 0 then
+    cbAccount.ItemIndex := 0;
+
+  // Ano: consulta direta na mesma conexão, porque a query da grade ainda não
+  // abriu — e ela justamente depende do filtro que está sendo montado aqui.
+  // Só entra ano de verdade (4 dígitos): dtposted é texto, qualquer outra
+  // coisa nessa posição não é ano para ninguém.
+  consulta := TSQLQuery.Create(nil);
+  try
+    consulta.Database := SQLite3ConnContas;
+    consulta.Transaction := SQLTransactionContas;
+    consulta.SQL.Text :=
+      'SELECT DISTINCT substr(dtposted, 1, 4) FROM extratos' +
+      ' ORDER BY substr(dtposted, 1, 4);';
+    consulta.Open;
+    while not consulta.EOF do
+    begin
+      texto := Trim(consulta.Fields[0].AsString);
+      if (Length(texto) = 4) and TryStrToInt(texto, ano) then
+        cbYear.Items.Add(texto);
+      consulta.Next;
+    end;
+    consulta.Close;
+  finally
+    consulta.Free;
+  end;
+
+  // Sem ano nenhum (extratos vazio, logo depois do "Novo Database") o combo
+  // não pode ficar em branco: entra o ano atual e o filtro segue de pé.
+  if cbYear.Items.Count = 0 then
+    cbYear.Items.Add(FormatDateTime('yyyy', Date));
+  cbYear.ItemIndex := 0;
+
+  // Garante a seleção final mesmo se nenhuma das combos disparar OnChange
+  // ao ganhar o primeiro ItemIndex.
+  AplicarFiltroExtratos;
+end;
+
+procedure TFormMoney.AplicarFiltroExtratos;
+var
+  sql, condicao: string;
+  idConta, ano: Integer;
+begin
+  // Sem database aberto não há o que filtrar: é o caminho do OnChange que a
+  // limpeza das combos dispara ao fechar o arquivo.
+  if not DatabaseAberto then
+    Exit;
+
+  condicao := '';
+  // Conta: o combo carrega o "id" de "contas" em Items.Objects. Combo vazia
+  // (nenhuma conta cadastrada) não restringe e valem todas as contas.
+  if (cbAccount.ItemIndex >= 0) and (cbAccount.ItemIndex < cbAccount.Items.Count) then
+  begin
+    idConta := Integer(PtrInt(cbAccount.Items.Objects[cbAccount.ItemIndex]));
+    condicao := 'account_id = ' + IntToStr(idConta);
+  end;
+
+  // Período = ano: não existe seletor de mês (as guias JAN..DEZ estão todas
+  // ocultas). dtposted é texto ISO (YYYY-MM-DD...), então o ano são os 4
+  // primeiros caracteres — que também batem no formato OFX (YYYYMMDD...).
+  // O valor é validado como número antes de entrar na query e a comparação
+  // é contra texto, para o SQLite não trocar de tipo no meio da expressão.
+  if (cbYear.ItemIndex >= 0) and (cbYear.ItemIndex < cbYear.Items.Count) then
+  begin
+    ano := StrToIntDef(Trim(cbYear.Items[cbYear.ItemIndex]), -1);
+    if ano >= 0 then
+    begin
+      if condicao <> '' then
+        condicao := condicao + ' AND ';
+      condicao := condicao + 'substr(dtposted, 1, 4) = ' +
+        QuotedStr(IntToStr(ano));
+    end;
+  end;
+
+  sql := 'SELECT * FROM extratos';
+  if condicao <> '' then
+    sql := sql + ' WHERE ' + condicao;
+  sql := sql + ' ORDER BY dtposted, id;';
+
+  // Mudou o filtro, muda a query: só dá para trocar o SQL com a query
+  // fechada, então fecha, reescreve e reabre na sequência.
+  SQLQueryExtratos.Close;
+  SQLQueryExtratos.SQL.Text := sql;
+  SQLQueryExtratos.Open;
+end;
+
+procedure TFormMoney.LimparFiltrosExtratos;
+begin
+  // Só esvazia: sem itens o ItemIndex cai sozinho para -1, e o OnChange que
+  // isso dispara não reabre nada (AplicarFiltroExtratos exige database).
+  cbAccount.Items.Clear;
+  cbYear.Items.Clear;
 end;
 
 procedure TFormMoney.miCloseClick(Sender: TObject);
@@ -279,6 +451,7 @@ begin
   // Sempre dá para fechar duas vezes: fechar algo já fechado é só no-op.
   try
     SQLQueryContas.Close;
+    SQLQueryExtratos.Close;
     SQLQuerySaldos.Close;
     SQLite3ConnContas.Close;
   except
@@ -301,6 +474,126 @@ begin
   // Mesmo caminho do "Gerenciar Contas": a página fica atrás do próprio
   // "Voltar" do painel inferior e o título vira "Gerenciamento de Saldos".
   NavigateToTab(tbSaldos);
+end;
+
+procedure TFormMoney.miImportClick(Sender: TObject);
+var
+  caminho, contaTexto, anoTexto, mensagem, erro: string;
+  registros: TRegistrosOfx;
+  ignorados, novos, duplicados, contaId, indice: Integer;
+begin
+  // Cada linha de "extratos" aponta para uma conta (account_id NOT NULL),
+  // entao sem conta escolhida nao ha para onde gravar. O menu "Transacoes"
+  // ja' nasce desativado sem database aberto, entao nao falta checar isso.
+  if (cbAccount.ItemIndex < 0) or (cbAccount.ItemIndex >= cbAccount.Items.Count)
+  then
+  begin
+    MessageDlg('Cadastre uma conta antes de importar o extrato.' + LineEnding +
+      'Cada linha de "extratos" pertence a uma conta da aba ' +
+      '"Gerenciar Contas".', mtWarning, [mbOK], 0);
+    Exit;
+  end;
+  contaId := Integer(PtrInt(cbAccount.Items.Objects[cbAccount.ItemIndex]));
+  // A recarga das combos no fim comeca sempre no primeiro item: guarda as
+  // duas escolhas para devolver o usuario para onde ele estava.
+  contaTexto := cbAccount.Text;
+  anoTexto := cbYear.Text;
+
+  dlgImportar.InitialDir := ExtractFilePath(ParamStr(0));
+  if not dlgImportar.Execute then
+    Exit; // usuario cancelou
+
+  caminho := dlgImportar.FileName;
+  // Caminho relativo (sem pasta) fica na pasta inicial do dialogo, para o
+  // arquivo nao cair no diretorio de trabalho corrente da aplicacao.
+  if ExtractFilePath(caminho) = '' then
+    caminho := IncludeTrailingPathDelimiter(dlgImportar.InitialDir) + caminho;
+
+  // Le o arquivo ANTES de mexer no database: falha de leitura nao grava nada.
+  try
+    registros := LerOfx(caminho, ignorados);
+  except
+    on E: Exception do
+    begin
+      MessageDlg('Não foi possível ler o arquivo "' + ExtractFileName(caminho) +
+        '".' + LineEnding + E.Message, mtError, [mbOK], 0);
+      Exit;
+    end;
+  end;
+
+  // Arquivo vazio, so' estrutura ou formato que nao e' OFX/OFC: nada a gravar.
+  if Length(registros) = 0 then
+  begin
+    MessageDlg('Nenhum registro encontrado em "' + ExtractFileName(caminho) +
+      '".' + LineEnding + 'O arquivo não tem linhas com data e valor.',
+      mtWarning, [mbOK], 0);
+    Exit;
+  end;
+
+  novos := 0;
+  duplicados := 0;
+  erro := '';
+  // As queries fecham antes da gravacao: o commit da importacao nao pode
+  // encontrar sentenca em andamento (o SQLite recusa o commit nesse caso).
+  // O finally religa tudo e refaz filtros + grade, no mesmo caminho do
+  // miNew/miOpen - e vale mesmo quando a importacao falha no meio.
+  try
+    try
+      SQLQueryContas.Close;
+      SQLQuerySaldos.Close;
+      SQLQueryExtratos.Close;
+      novos := ImportarExtratos(SQLite3ConnContas, contaId, registros,
+        duplicados);
+    except
+      on E: Exception do
+        erro := 'Não foi possível importar "' + ExtractFileName(caminho) +
+          '".' + LineEnding + E.Message;
+    end;
+  finally
+    try
+      if not SQLQueryContas.Active then
+        SQLQueryContas.Open;
+      if not SQLQuerySaldos.Active then
+        SQLQuerySaldos.Open;
+      // Recarrega as combos (o arquivo pode trazer anos que ainda nao
+      // apareciam), devolve a conta e o ano escolhidos e reabre a query da
+      // grade ja' filtrada - e' a grade que mostra o que acabou de entrar.
+      CarregarFiltrosExtratos;
+      indice := cbAccount.Items.IndexOf(contaTexto);
+      if indice >= 0 then
+        cbAccount.ItemIndex := indice;
+      indice := cbYear.Items.IndexOf(anoTexto);
+      if indice >= 0 then
+        cbYear.ItemIndex := indice;
+      AplicarFiltroExtratos;
+    except
+      on E: Exception do
+        if erro = '' then
+          erro := 'O extrato foi gravado, mas a tela não pôde ser ' +
+            'atualizada.' + LineEnding + E.Message;
+    end;
+  end;
+
+  if erro <> '' then
+  begin
+    MessageDlg(erro, mtError, [mbOK], 0);
+    Exit;
+  end;
+
+  // O que o usuario precisa saber: quanto entrou, quanto ja' existia (reimportar
+  // o mesmo arquivo nao duplica) e quanto o arquivo tinha incompleto.
+  mensagem := 'Importação concluída.' + LineEnding + LineEnding +
+    IntToStr(novos) + ' ' + Plural(novos, 'registro adicionado em "',
+    'registros adicionados em "') + contaTexto + '".';
+  if duplicados > 0 then
+    mensagem := mensagem + LineEnding + IntToStr(duplicados) + ' ' +
+      Plural(duplicados, 'registro já existia e foi pulado.',
+      'registros já existiam e foram pulados.');
+  if ignorados > 0 then
+    mensagem := mensagem + LineEnding + IntToStr(ignorados) + ' ' +
+      Plural(ignorados, 'bloco ignorado (sem data ou sem valor).',
+      'blocos ignorados (sem data ou sem valor).');
+  MessageDlg(mensagem, mtInformation, [mbOK], 0);
 end;
 
 procedure TFormMoney.miListClick(Sender: TObject);
@@ -351,14 +644,20 @@ begin
 
   // Mesma lógica da aba tbBancos: abrir as queries faz a grade e o navigator
   // das abas tbContas/tbSaldos passarem a enxergar as tabelas "contas" e
-  // "saldos" (as duas moram no mesmo database, na mesma conexão).
+  // "saldos"; a de extratos entra por último, já filtrada (as três moram no
+  // mesmo database, na mesma conexão).
   try
     SQLQueryContas.Close;
+    SQLQueryExtratos.Close;
     SQLQuerySaldos.Close;
     SQLite3ConnContas.Close;
     SQLite3ConnContas.DatabaseName := novoArquivo;
     SQLQueryContas.Open;
     SQLQuerySaldos.Open;
+    // O filtro precisa das combos preenchidas (conta de "contas", ano de
+    // "extratos") antes da query da grade abrir com a seleção aplicada.
+    CarregarFiltrosExtratos;
+    AplicarFiltroExtratos;
   except
     on E: Exception do
       MessageDlg('O database "' + ExtractFileName(novoArquivo) +
@@ -399,7 +698,8 @@ begin
   if not IsAccountsDatabase(abrirArquivo) then
   begin
     MessageDlg('"' + ExtractFileName(abrirArquivo) +
-      '" não é um database de contas (falta a tabela "contas" ou "saldos").' +
+      '" não é um database de contas (falta a tabela "contas", "extratos" ' +
+      'ou "saldos").' +
       LineEnding +
       'Crie um com o menu "Novo Database" ou escolha outro arquivo.',
       mtError, [mbOK], 0);
@@ -407,15 +707,20 @@ begin
   end;
 
   // Mesma ligação do "Novo Database": fecha o que estiver aberto, aponta a
-  // conexão para o arquivo escolhido e reabre as queries da tbContas e da
-  // tbSaldos (uma ligação só para as duas tabelas).
+  // conexão para o arquivo escolhido e reabre as queries da tbContas, da
+  // tbSaldos e a de extratos (uma ligação só para as três tabelas).
   try
     SQLQueryContas.Close;
+    SQLQueryExtratos.Close;
     SQLQuerySaldos.Close;
     SQLite3ConnContas.Close;
     SQLite3ConnContas.DatabaseName := abrirArquivo;
     SQLQueryContas.Open;
     SQLQuerySaldos.Open;
+    // O filtro precisa das combos preenchidas (conta de "contas", ano de
+    // "extratos") antes da query da grade abrir com a seleção aplicada.
+    CarregarFiltrosExtratos;
+    AplicarFiltroExtratos;
   except
     on E: Exception do
       MessageDlg('Não foi possível abrir o database "' +

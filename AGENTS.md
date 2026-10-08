@@ -3,7 +3,8 @@
 ## Stack
 
 - Lazarus 4.8 / Free Pascal 3.2.2, modo `{$mode objfpc}{$H+}`, alvo win64.
-- LCL (formulário em `unitmoney.pas` + `unitmoney.lfm`), dados em `unitDatabase.pas`.
+- LCL (formulário em `unitmoney.pas` + `unitmoney.lfm`), dados em `unitDatabase.pas`,
+  leitor de extrato OFC/OFX em `unitOfx.pas` (tags + encoding).
 - Banco: SQLite `banks.db`, criado ao lado do `projectMoney.exe`.
   **`sqlite3.dll` (x64, oficial) é obrigatória na raiz** — o FPC carrega em runtime.
 
