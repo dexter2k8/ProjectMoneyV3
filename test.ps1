@@ -801,7 +801,8 @@ try {
         'dtposted=ExtratoDtpostedGetText',
         'memo=ExtratoTextoGetText',
         'chknum=ExtratoTextoGetText',
-        'trnamt=ExtratoTrnAmtGetText')) {
+        'trnamt=ExtratoTrnAmtGetText',
+        'bankid=BancoIdGetText')) {
         $campo, $handler = $ligacao -split '='
         $padrao = "FieldByName\('" + $campo + "'\)\.OnGetText\s*:=\s*@" + $handler
         if ($pasTexto -notmatch $padrao) {
@@ -875,6 +876,38 @@ try {
     }
     Check 'gridContas rotula as colunas (Conta, Tipo, Banco, Agencia, Descricao) (.lfm)' (
         $rotulosContas) $detRotulos
+    # Coluna "Banco" do gridContas edita por combo (cbsPickList) com os nomes
+    # de tbBancos e grava o id: OnSelectEditor repoe o combo a cada edicao (a
+    # lista de bancos muda e o PickList de projeto e' fixo), o OnSetText do
+    # campo traduz nome->id (o DBGrid grava via Field.Text) e o AfterOpen da
+    # query religa os handlers - os campos sao dinamicos, cada Open os recria.
+    $blocoSQLContas = Get-LfmBlock $lfmTexto 'SQLQueryContas: TSQLQuery'
+    Check 'gridContas edita o banco por combo cbsPickList (.lfm)' (
+        $blocoContas.Contains('ButtonStyle = cbsPickList')) (
+        'ButtonStyle = cbsPickList ausente na coluna bankid')
+    Check 'gridContas repoe o combo de bancos a cada edicao (.lfm)' (
+        $blocoContas.Contains('OnSelectEditor = gridContasSelectEditor')) (
+        'OnSelectEditor = gridContasSelectEditor ausente no gridContas')
+    Check 'SQLQueryContas religa os handlers de banco a cada Open (.lfm)' (
+        $blocoSQLContas.Contains('AfterOpen = SQLQueryContasAfterOpen')) (
+        'AfterOpen = SQLQueryContasAfterOpen ausente na query de contas')
+    Check 'SQLQueryContas grava o banco escolhido no combo (OnSetText) (.pas)' (
+        ($pasTexto -match 'procedure\s+BancoIdSetText\s*\(') -and
+        ($pasTexto -match
+            "FieldByName\('bankid'\)\.OnSetText\s*:=\s*@BancoIdSetText")) (
+        'BancoIdSetText e/ou a ligacao do OnSetText de bankid ausentes')
+    Check 'combo de bancos alimentado pela query de tbBancos (.pas)' (
+        $pasTexto -match "SQLQueryBanks\.FieldByName\('name'\)") (
+        'MontarListaBancos nao le a query de tbBancos')
+    # O id do banco e' codigo TEXT ('001', '077'): no driver SQLite do FPC a
+    # coluna TEXT vira campo memo, que nao tem AsInteger - o acesso derruba
+    # "Invalid type conversion to Integer in field id" na cara do usuario. A
+    # leitura tem de ser sempre AsString (a comparacao e' numerica por fora).
+    # O alvo e' a query de BANCOS: contas.id e' INTEGER e o AsInteger dele
+    # (AtualizarComboContas) e legitimo.
+    Check 'id dos bancos lido como texto, sem AsInteger (.pas)' (
+        $pasTexto -notmatch "SQLQueryBanks\.FieldByName\('id'\)\.AsInteger") (
+        'AsInteger em banks.id: o TEXT do SQLite vira memo e estoura')
     $blocoSaldos = Get-LfmBlock $lfmTexto 'gridSaldos: TDBGrid'
     $ordemSaldos = $false
     $detSaldos = 'bloco gridSaldos nao encontrado no .lfm'
@@ -1875,6 +1908,15 @@ try {
         # da grade segura o lock) e pelo proprio fluxo do usuario - o combo
         # so' existe na tela de extratos, entao sem a remontagem feita no
         # "Voltar" a conta excluida continuaria aparecendo la.
+        # Banco na lista de tbBancos ANTES de subir (o arquivo tem de estar
+        # livre): a coluna "Banco" do gridContas traduz o bankid pelo codigo
+        # do banco, e sem essa linha o laco da traducao nao roda. Foi assim
+        # que o AsInteger em id TEXT (que o driver SQLite traz como campo
+        # memo) passou despercebido e so' quebrou com os bancos reais.
+        Check 'banco de teste gravado em banks.db (passo [10])' (
+            [Sq]::Executar($db,
+                "INSERT INTO banks (id, name, alias)" +
+                " VALUES ('001', 'Banco do Brasil', 'BB');") -eq 1)
         $pCb = Start-Process -FilePath $exe -WorkingDirectory $root -PassThru
         Start-Sleep -Seconds 3
         $pCb.Refresh()
@@ -1928,6 +1970,15 @@ try {
             }
             Check 'tela da tbContas abriu (passo [10])' (
                 @($aposCb | Where-Object { $baseCb -notcontains $_ }).Count -gt 0)
+
+            # A pintura da coluna "Banco" traduz o bankid pelo codigo da
+            # lista de tbBancos (agora populada com o banco de teste): um
+            # erro de conversao ali vira dialogo MODAL na cara do usuario -
+            # e' o defeito do AsInteger em id TEXT.
+            Start-Sleep -Milliseconds 500
+            $dlgPint = [UiTest]::FindDialog([uint32]$pCb.Id)
+            Check 'nenhum dialogo de erro ao pintar a grade de contas (passo [10])' (
+                $dlgPint -eq [IntPtr]::Zero) ('hwnd=' + $dlgPint)
 
             $navCb = @($aposCb | Where-Object { $_ -match ' 359x32$' }) |
                 Select-Object -First 1
@@ -2016,6 +2067,12 @@ try {
             try { $pCb.Kill(); $pCb.WaitForExit() } catch { }
         }
     }
+
+    # Volta banks.db ao estado do passo: o banco de teste so' existiu para o
+    # laco da traducao do "Banco" rodar com dados (arquivo livre agora, com
+    # a aplicacao encerrada).
+    Check 'banco de teste removido de banks.db (passo [10])' (
+        [Sq]::Executar($db, "DELETE FROM banks WHERE id = '001';") -eq 1)
 
     # Conferencia no arquivo: so' funciona com a conexao encerrada (app
     # morta) e prova que o delete de verdade foi aplicado - nao so' some da

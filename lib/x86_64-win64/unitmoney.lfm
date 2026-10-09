@@ -264,14 +264,20 @@ object FormMoney: TFormMoney
         Align = alClient
         AutoFillColumns = True
         Color = clWindow
-        Columns = <
+        Columns = <        
           item
+            Title.Caption = 'account_id'
+            Width = 273
             FieldName = 'account_id'
-          end
+          end        
           item
+            Title.Caption = 'balance'
+            Width = 273
             FieldName = 'balance'
-          end
+          end        
           item
+            Title.Caption = 'enddate'
+            Width = 273
             FieldName = 'enddate'
           end>
         DataSource = DataSourceSaldos
@@ -334,38 +340,41 @@ object FormMoney: TFormMoney
         Align = alClient
         AutoFillColumns = True
         Color = clWindow
-        Columns = <
+        Columns = <        
           item
-            FieldName = 'acctid'
             SizePriority = 0
             Title.Caption = 'Conta'
             Width = 130
-          end
+            FieldName = 'acctid'
+          end        
           item
-            FieldName = 'accttype'
             SizePriority = 0
             Title.Caption = 'Tipo'
             Width = 100
-          end
+            FieldName = 'accttype'
+          end        
           item
-            FieldName = 'bankid'
+            ButtonStyle = cbsPickList
             SizePriority = 0
             Title.Caption = 'Banco'
-            Width = 80
-          end
+            Width = 120
+            FieldName = 'bankid'
+          end        
           item
-            FieldName = 'branchid'
             SizePriority = 0
             Title.Caption = 'Agência'
             Width = 80
-          end
+            FieldName = 'branchid'
+          end        
           item
-            FieldName = 'description'
             Title.Caption = 'Descrição'
+            Width = 389
+            FieldName = 'description'
           end>
         DataSource = DataSourceContas
         Options = [dgEditing, dgTitles, dgIndicator, dgColumnResize, dgColumnMove, dgColLines, dgRowLines, dgTabs, dgAlwaysShowSelection, dgConfirmDelete, dgCancelOnExit, dgDisplayMemoText]
         TabOrder = 0
+        OnSelectEditor = gridContasSelectEditor
       end
       object pnContas: TPanel
         Left = 0
@@ -450,36 +459,36 @@ object FormMoney: TFormMoney
     AutoFillColumns = True
     BorderSpacing.Top = 24
     Color = clWindow
-    Columns = <
+    Columns = <    
       item
-        FieldName = 'dtposted'
         SizePriority = 0
         Title.Caption = 'Data'
         Width = 90
-      end
+        FieldName = 'dtposted'
+      end    
       item
-        FieldName = 'memo'
         Title.Caption = 'Descrição'
-      end
+        Width = 547
+        FieldName = 'memo'
+      end    
       item
-        FieldName = 'chknum'
         SizePriority = 0
         Title.Caption = 'Documento'
         Width = 80
-      end
+        FieldName = 'chknum'
+      end    
       item
         Alignment = taRightJustify
-        FieldName = 'trnamt'
         SizePriority = 0
         Title.Alignment = taRightJustify
         Title.Caption = 'Valor'
         Width = 110
+        FieldName = 'trnamt'
       end>
     DataSource = DataSourceExtratos
-    OnPrepareCanvas = gridTransPrepareCanvas
-    Options = [dgEditing, dgTitles, dgIndicator, dgColumnResize, dgColumnMove, dgColLines, dgRowLines, dgTabs, dgAlwaysShowSelection, dgConfirmDelete, dgCancelOnExit]
     TabOrder = 5
     Visible = False
+    OnPrepareCanvas = gridTransPrepareCanvas
   end
   object MainMenu: TMainMenu
     Left = 24
@@ -629,6 +638,7 @@ object FormMoney: TFormMoney
   object SQLQueryContas: TSQLQuery
     PacketRecords = -1
     FieldDefs = <>
+    AfterOpen = SQLQueryContasAfterOpen
     Database = SQLite3ConnContas
     Transaction = SQLTransactionContas
     SQL.Strings = (

@@ -96,6 +96,14 @@ type
     tbJan: TTabSheet;
     tslblAnterior: TStaticText;
     txtSaldo: TLabel;
+    // Banco da conta na grade de contas: a coluna bankid edita por combo com
+    // os nomes de tbBancos (ButtonStyle = cbsPickList) e grava o id. O
+    // DBGrid grava célula via Field.Text, que dispara o OnSetText — é ali que
+    // o nome escolhido vira id; o OnGetText faz o caminho de volta na
+    // exibição (e no texto inicial do combo, que abre no nome certo).
+    procedure BancoIdGetText(Sender: TField; var AText: string;
+      DisplayText: Boolean);
+    procedure BancoIdSetText(Sender: TField; const AText: string);
     procedure cbAccountChange(Sender: TObject);
     procedure cbYearChange(Sender: TObject);
     // Formatação da grade de extratos: os campos TEXT do SQLite viram ftMemo,
@@ -108,6 +116,12 @@ type
     procedure ExtratoTrnAmtGetText(Sender: TField; var AText: string;
       DisplayText: Boolean);
     procedure FormCreate(Sender: TObject);
+    // O combo da coluna "Banco" é reabastecido a cada edição: a lista de
+    // bancos muda em tbBancos e o PickList de projeto é fixo. OnSelectEditor
+    // roda depois do preenchimento padrão do LCL, então dá para trocar os
+    // itens na hora.
+    procedure gridContasSelectEditor(Sender: TObject; Column: TColumn;
+      var Editor: TWinControl);
     // Cor do valor na grade de extratos (crédito azul, débito vermelho): roda
     // antes do desenho padrão da célula, que é quem pinta o texto.
     procedure gridTransPrepareCanvas(Sender: TObject; DataCol: Integer;
@@ -121,6 +135,10 @@ type
     procedure miOpenClick(Sender: TObject);
     procedure PageControl1Change(Sender: TObject);
     procedure sbtnVoltarClick(Sender: TObject);
+    // Liga os handlers de banco (OnGetText/OnSetText) a cada Open da query de
+    // contas: os campos são dinâmicos e cada Open os recria sem handlers —
+    // o mesmo problema, e a mesma solução, dos extratos (PrepararCamposExtratos).
+    procedure SQLQueryContasAfterOpen(DataSet: TDataSet);
     procedure toggleShowControlsClick(Sender: TObject);
   private
     // Estado das guias antes de "Lista de Bancos" (para o "Voltar" devolver)
@@ -159,6 +177,13 @@ type
     // "contas" e o combo só existe na tela de extratos, então sem remontar
     // aqui a troca só aparece no próximo miNew/miOpen/miImport.
     procedure AtualizarComboContas;
+    // Lista de bancos de tbBancos (SQLQueryBanks, aberta desde a abertura do
+    // programa) no formato "nome=id": alimenta o combo da coluna "Banco" e
+    // as traduções id<->nome. Percorre a query guardando e devolvendo a
+    // posição, para a grade de bancos não mudar de linha selecionada.
+    procedure MontarListaBancos(ALista: TStrings);
+    function BancoNomePorId(const AId: Integer): string;
+    function BancoIdPorNome(const ANome: string): Integer;
 
   public
 
@@ -576,6 +601,155 @@ begin
     AText := FormatFloat('0.00', valor, formatos) + ' C'
   else
     AText := FormatFloat('0.00', -valor, formatos) + ' D';
+end;
+
+// Mostra o nome do banco no lugar do id, tanto na exibição (DisplayText=True)
+// quanto no texto do editor (False) — assim o combo da edição abre já no
+// nome, que é o que está na lista. Id sem banco correspondente (registro
+// antigo ou banco excluído) aparece como número, sem inventar nada.
+procedure TFormMoney.BancoIdGetText(Sender: TField; var AText: string;
+  DisplayText: Boolean);
+begin
+  if Sender.IsNull then
+  begin
+    AText := '';
+    Exit;
+  end;
+  AText := BancoNomePorId(Sender.AsInteger);
+  if AText = '' then
+    AText := IntToStr(Sender.AsInteger);
+end;
+
+// Gravação da célula: o DBGrid faz Field.Text := texto do combo, e o
+// SetEditText do campo vem parar aqui. Número passa direto (quem preferir
+// digitar o id); nome vira o id correspondente. Texto vazio ou que não
+// exista na lista não mexe no valor (o combo é de lista — só dá para
+// escolher o que está lá —, e apagar tudo não deve virar lixo no id).
+procedure TFormMoney.BancoIdSetText(Sender: TField; const AText: string);
+var
+  novoId: Integer;
+begin
+  if TryStrToInt(AText, novoId) then
+  begin
+    Sender.AsInteger := novoId;
+    Exit;
+  end;
+  novoId := BancoIdPorNome(AText);
+  if novoId >= 0 then
+    Sender.AsInteger := novoId;
+end;
+// Liga os handlers de banco logo depois de cada Open: os campos são
+// dinâmicos (FieldDefs vazio) e cada abertura os recria sem handlers — o
+// mesmo problema, e a mesma solução, dos extratos.
+procedure TFormMoney.SQLQueryContasAfterOpen(DataSet: TDataSet);
+begin
+  SQLQueryContas.FieldByName('bankid').OnGetText := @BancoIdGetText;
+  SQLQueryContas.FieldByName('bankid').OnSetText := @BancoIdSetText;
+end;
+
+// Preenche o combo da coluna "Banco" com os nomes atuais de tbBancos. O
+// LCL montou o editor e já copiou o PickList fixo de projeto para os itens;
+// aqui isso é trocado pela lista viva da query (OnSelectEditor roda depois).
+procedure TFormMoney.gridContasSelectEditor(Sender: TObject; Column: TColumn;
+  var Editor: TWinControl);
+var
+  combo: TCustomComboBox;
+  lista: TStringList;
+  i: Integer;
+begin
+  if (Column = nil) or (Column.FieldName <> 'bankid') or (Editor = nil) or
+    not (Editor is TCustomComboBox) then
+    Exit;
+  combo := TCustomComboBox(Editor);
+  lista := TStringList.Create;
+  try
+    MontarListaBancos(lista);
+    combo.Items.BeginUpdate;
+    try
+      combo.Items.Clear;
+      for i := 0 to lista.Count - 1 do
+        combo.Items.Add(lista.Names[i]);
+    finally
+      combo.Items.EndUpdate;
+    end;
+  finally
+    lista.Free;
+  end;
+end;
+
+// Copia a lista de bancos de tbBancos no formato "nome=id". Varre a própria
+// query (que fica aberta desde a abertura do programa), guardando e
+// devolvendo a posição com bookmark para a grade de bancos não mudar de
+// linha — vazia se a query não estiver aberta (fora do programa, nunca).
+// O id do banco é o código em TEXTO ('001', '077'...): no driver SQLite do
+// FPC a coluna TEXT vira campo memo, que NÃO tem AsInteger (estouraria
+// "Invalid type conversion to Integer in field id") — então o valor lido é
+// sempre o texto puro.
+procedure TFormMoney.MontarListaBancos(ALista: TStrings);
+var
+  bm: TBookmark;
+begin
+  ALista.BeginUpdate;
+  try
+    ALista.Clear;
+    if not SQLQueryBanks.Active then
+      Exit;
+    bm := SQLQueryBanks.GetBookmark;
+    SQLQueryBanks.DisableControls;
+    try
+      SQLQueryBanks.First;
+      while not SQLQueryBanks.Eof do
+      begin
+        ALista.Values[SQLQueryBanks.FieldByName('name').AsString] :=
+          SQLQueryBanks.FieldByName('id').AsString;
+        SQLQueryBanks.Next;
+      end;
+    finally
+      SQLQueryBanks.GotoBookmark(bm);
+      SQLQueryBanks.EnableControls;
+    end;
+  finally
+    ALista.EndUpdate;
+  end;
+end;
+
+// O código do banco tem zero à esquerda ('077') e o bankid da conta guarda
+// o número (77), então a comparação é numérica — código que não for número
+// não casa com nada (bankid é INTEGER, não tem para onde ir).
+function TFormMoney.BancoNomePorId(const AId: Integer): string;
+var
+  lista: TStringList;
+  i, codigo: Integer;
+begin
+  Result := '';
+  lista := TStringList.Create;
+  try
+    MontarListaBancos(lista);
+    for i := 0 to lista.Count - 1 do
+      if TryStrToInt(lista.ValueFromIndex[i], codigo) and (codigo = AId) then
+      begin
+        Result := lista.Names[i];
+        Break;
+      end;
+  finally
+    lista.Free;
+  end;
+end;
+
+function TFormMoney.BancoIdPorNome(const ANome: string): Integer;
+var
+  lista: TStringList;
+begin
+  Result := -1;
+  if ANome = '' then
+    Exit;
+  lista := TStringList.Create;
+  try
+    MontarListaBancos(lista);
+    Result := StrToIntDef(lista.Values[ANome], -1);
+  finally
+    lista.Free;
+  end;
 end;
 
 // Cor do valor conforme o sinal: crédito azul, débito vermelho. Célula
