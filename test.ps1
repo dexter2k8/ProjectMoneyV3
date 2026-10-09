@@ -79,6 +79,7 @@ public class UiTest {
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetMenuString(IntPtr h, uint id, StringBuilder s, int max, bool byPos);
     [DllImport("user32.dll")] static extern uint GetMenuState(IntPtr h, uint id, uint flags);
     [DllImport("user32.dll")] static extern int GetDlgCtrlID(IntPtr h);
+    [DllImport("user32.dll")] static extern IntPtr GetParent(IntPtr h);
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
     [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
     [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
@@ -274,6 +275,41 @@ public class UiTest {
         PostMessage(h, 0x0202, (IntPtr)0, lp);   // WM_LBUTTONUP
         return "hwnd=" + h + " rel=" + rx + "," + ry;
     }
+
+    // ---- Guias (abas) do PageControl1. No Win32 elas sao um SysTabControl32
+    // que so' recebe os itens COM TabVisible (TWin32WSCustomTabControl.
+    // AddAllNBPages pula as ocultas), entao contar itens = contar guias
+    // visiveis - e' por isso que da para provar "so' as guias do mes com
+    // saldo aparecem". SO' mensagens sem ponteiro: TCM_GETITEM/GETITEMTEXT
+    // recebem um buffer que o PROCESSO DO ALVO dereferencia - num envio
+    // cross-process isso le memoria invalida e derruba a aplicacao (ja'
+    // aconteceu); a ordem das legendas JAN..DEZ e' garantida pelo .lfm
+    // (checado no passo [1]) e nao por leitura daqui.
+    // TCM_GETITEMCOUNT = TCM_FIRST(0x1300) + 4. -1 = hwnd invalido. (O +3 e'
+    // TCM_SETIMAGELIST, que devolve o handle da lista antiga - nao serve.)
+    public static int TabCount(IntPtr tab) {
+        if (tab == IntPtr.Zero) return -1;
+        return (int)Msg(tab, 0x1304, IntPtr.Zero, IntPtr.Zero);
+    }
+    // TCM_GETCURSEL = TCM_FIRST + 11: indice da guia ativa no Win32
+    // (-1 = nenhuma, que e' o estado com todas as guias escondidas).
+    public static int TabSel(IntPtr tab) {
+        if (tab == IntPtr.Zero) return -1;
+        return (int)Msg(tab, 0x130B, IntPtr.Zero, IntPtr.Zero);
+    }
+    // Troca a selecao do combo pelo MESMO caminho do usuario: CB_SETCURSEL
+    // (0x014E) no combo e CBN_SELCHANGE (WM_COMMAND com HiWord = 1) no pai -
+    // e' esse WM_COMMAND que dispara o OnChange do LCL. Devolve falso quando
+    // o indice nao existe (CB_SETCURSEL devolve -1).
+    public static bool SelectCombo(IntPtr combo, int index) {
+        if (combo == IntPtr.Zero) return false;
+        if ((int)Msg(combo, 0x014E, (IntPtr)index, IntPtr.Zero) == -1) return false;
+        int id = GetDlgCtrlID(combo);
+        IntPtr pai = GetParent(combo);
+        IntPtr wparam = (IntPtr)((1 << 16) | (id & 0xFFFF));  // CBN_SELCHANGE = 1
+        Msg(pai, 0x0111, wparam, combo);                      // WM_COMMAND
+        return true;
+    }
 }
 "@
 }
@@ -449,19 +485,51 @@ function Test-LfmLabels($Colunas, $Esperado) {
     return $null
 }
 
+# Le as guias de mes (TTabSheet) do .lfm na ordem em que aparecem, como pares
+# "nome=legenda". Cada bloco vai do "object <nome>: TTabSheet" ate' o "end" do
+# MESMO recuo (as propriedades ficam dentro dele), entao a ordem das
+# propriedades nao importa - o Lazarus IDE reordena o .lfm ao salvar o form.
+# E' assim que se sabe QUAL guia e' cada mes: a visibilidade em runtime vem
+# dos saldos (AtualizarAbasMes), a identidade da guia vem do .lfm.
+function Get-LfmTabSheets([string]$Texto) {
+    $guias = @()
+    $linhas = $Texto -split "`r?`n"
+    for ($i = 0; $i -lt $linhas.Count; $i++) {
+        if ($linhas[$i] -notmatch '^([ \t]*)object[ \t]+(\w+):[ \t]*TTabSheet[ \t]*$') {
+            continue
+        }
+        $recuo = $Matches[1]
+        $par = $Matches[2] + '='
+        $fim = [regex]::Escape($recuo) + 'end[ \t]*$'
+        for ($j = $i + 1; $j -lt $linhas.Count; $j++) {
+            if ($linhas[$j] -match $fim) { break }
+            if ($linhas[$j] -match "^[ \t]*Caption[ \t]*=[ \t]*'([^']*)'") {
+                $par += $Matches[1]
+            }
+        }
+        $guias += $par
+    }
+    # Sem a virgula: o canal de saida desmembra o array (o "@" do chamador
+    # remonta), e o ",@..." dobraria a pilha - o join viraria "Object[]".
+    return $guias
+}
+
 # Grava N linhas em "saldos" (a tabela da tbSaldos) direto no arquivo, todas
-# datadas do ano informado: e' de saldos.enddate que o cbYear le a lista de
-# anos, entao o ano gravado aqui e' o que o combo tem de mostrar. O arquivo
-# tem de estar LIVRE (conexao encerrada). Devolve o TOTAL de linhas de
-# "saldos" apos o INSERT (0 = arquivo ausente/falhou - quem reporta e' o
-# chamador).
-function Add-SaldosRows([string]$Path, [int]$Count, [string]$Ano) {
+# datadas do ANO e do MES informados: e' de saldos.enddate que o cbYear le a
+# lista de anos e que o PageControl1 le as guias de mes (mes com saldo =
+# guia visivel), entao o periodo gravado aqui e' o que as duas coisas tem de
+# mostrar. O arquivo tem de estar LIVRE (conexao encerrada). Devolve o TOTAL
+# de linhas de "saldos" apos o INSERT (0 = arquivo ausente/falhou - quem
+# reporta e' o chamador).
+function Add-SaldosRows([string]$Path, [int]$Count, [string]$Ano, [string]$Mes) {
     if (-not (Test-Path $Path)) { return 0 }
-    # O INSERT com CTE recursivo grava tudo em uma unica sentenca.
+    # O INSERT com CTE recursivo grava tudo em uma unica sentenca. O dia '15'
+    # e' de proposito: vale para qualquer mes (o que importa e' o texto, e o
+    # mes e' lido por substr(enddate, 6, 2)).
     $sql = 'WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c' +
         ' WHERE x < ' + $Count + ') INSERT INTO "saldos"' +
         " (account_id, balance, enddate) SELECT 1, x * 1.5, '" + $Ano +
-        "-01-31' FROM c;"
+        "-" + $Mes + "-15' FROM c;"
     if ([Sq]::Executar($Path, $sql) -le 0) { return 0 }
     # Le do proprio arquivo o numero de linhas que ficou: devolver o pedido sem
     # conferir esconderia um INSERT que nao deu certo.
@@ -530,17 +598,43 @@ function Invoke-MenuFileDialog($Process, [string]$MenuText) {
 }
 
 # Grava o caminho no campo de nome e confirma (botao OK / IDOK).
-# Devolve o campo usado (Zero quando o dialogo nao tem campo de nome).
+# O dialogo comum do Windows ainda pode estar montando os controles quando a
+# janela aparece (e' o instante em que FindDialog ja' a enxerga): nesse momento
+# o primeiro Edit visivel nao e' o de nome de arquivo - e' o da barra de
+# endereco (id 41477, invisivel no estado normal) - o caminho vai para o lugar
+# errado e o OK nao faz nada, deixando o dialogo aberto pra sempre. O
+# FECHAMENTO e' a unica prova de que o campo era o certo, entao o clique e'
+# refeito num loop curto, re-achando o campo a cada volta (com a janela ja'
+# montada o Edit visivel e' o certo). Devolve o campo usado (Zero quando o
+# dialogo nao tem campo de nome).
 function Set-FileDialogName([IntPtr]$Dlg, [string]$Path) {
-    $edit = [UiTest]::FindFileNameEdit($Dlg)
-    if ($edit -eq [IntPtr]::Zero) { return [IntPtr]::Zero }
-    if (-not [UiTest]::SetText($edit, $Path)) { return [IntPtr]::Zero }
-    $btnOk = [UiTest]::FindOkButton($Dlg)
-    if ($btnOk -ne [IntPtr]::Zero) {
-        [void][UiTest]::PostMessage($btnOk, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)  # BM_CLICK
-    }
-    else {
-        [void][UiTest]::PostMessage($Dlg, 0x0111, [IntPtr]1, [IntPtr]::Zero)          # WM_COMMAND/IDOK
+    $edit = [IntPtr]::Zero
+    for ($t = 0; ($t -lt 4) -and [UiTest]::IsWindow($Dlg); $t++) {
+        $edit = [UiTest]::FindFileNameEdit($Dlg)
+        if ($edit -ne [IntPtr]::Zero) {
+            [void][UiTest]::SetText($edit, $Path)
+            # Confirmacao barata de que o texto caiu no controle achado.
+            if ([UiTest]::GetText($edit) -eq $Path) {
+                $btnOk = [UiTest]::FindOkButton($Dlg)
+                if ($btnOk -ne [IntPtr]::Zero) {
+                    [void][UiTest]::PostMessage($btnOk, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)  # BM_CLICK
+                }
+                else {
+                    [void][UiTest]::PostMessage($Dlg, 0x0111, [IntPtr]1, [IntPtr]::Zero)          # WM_COMMAND/IDOK
+                }
+                # O BM_CLICK e' POSTADO: o dialogo so' reage depois que a
+                # propria thread dele processa o clique - e valida o arquivo,
+                # o que o shell e o antivirus ja' atrasaram em ~17s aqui. Se em
+                # 2,5s nada comecou a mudar, o clique nao era o campo certo:
+                # tenta de novo. (Um clique a mais nao faz mal: se o dialogo
+                # ja' fechou, a janela nao existe mais e a mensagem se perde.)
+                for ($w = 0; ($w -lt 10) -and [UiTest]::IsWindow($Dlg); $w++) {
+                    Start-Sleep -Milliseconds 250
+                }
+                if (-not [UiTest]::IsWindow($Dlg)) { return $edit }
+            }
+        }
+        Start-Sleep -Milliseconds 250
     }
     $edit
 }
@@ -618,6 +712,15 @@ function Find-ComboHwnd([IntPtr]$Main, [int]$Largura) {
 function Get-ComboCount([IntPtr]$Combo) {
     if ($Combo -eq [IntPtr]::Zero) { return -1 }
     [int64][UiTest]::Msg($Combo, 0x0146, [IntPtr]::Zero, [IntPtr]::Zero)
+}
+
+# Acha o SysTabControl32 do PageControl1 (a faixa de guias JAN..DEZ) entre
+# os filhos diretos do form. No Win32 a guia e' um ITEM do proprio controle e
+# o LCL so' insere as paginas COM TabVisible (AddAllNBPages), entao ali se le
+# quantas guias estao visiveis ([UiTest]::TabCount), quais ([UiTest]::TabText)
+# e qual e' a ativa ([UiTest]::TabSel). Zero = sem faixa na tela.
+function Find-TabHwnd([IntPtr]$Main) {
+    [UiTest]::FindChild($Main, 'SysTabControl32')
 }
 
 # A grade de extratos (gridTrans) e' controle do FORM com Align=alClient: ela
@@ -880,7 +983,19 @@ try {
     Check 'combos de filtro com OnChange (.lfm)' (
         ($lfmTexto -match 'OnChange = cbAccountChange') -and
         ($lfmTexto -match 'OnChange = cbYearChange')) (
-        'cbAccountChange e/ou cbYearChange ausentes')
+        'cbYearChange e/ou cbAccountChange ausentes')
+    # As 12 guias de mes tem de existir, em ordem e com as legendas JAN..DEZ.
+    # E' o que define QUAL guia e' cada mes: a visibilidade delas em runtime
+    # vem dos saldos do ano (AtualizarAbasMes mostra so' os meses com saldo),
+    # mas a identidade da guia - e, com ela, "a ultima guia e' o mes mais
+    # recente" - vem daqui. As 3 guias de gestao (tbBancos/tbSaldos/tbContas)
+    # tambem sao TTabSheet: o filtro e' pelo nome de 3 letras (tbJan..tbDez).
+    $abasMesLfm = @(Get-LfmTabSheets $lfmTexto) |
+        Where-Object { $_ -match '^tb[A-Z][a-z]{2}=' }
+    Check '12 guias de mes JAN..DEZ em ordem (.lfm)' (
+        ($abasMesLfm -join ' ') -eq ('tbJan=JAN tbFev=FEV tbMar=MAR tbAbr=ABR ' +
+        'tbMai=MAI tbJun=JUN tbJul=JUL tbAgo=AGO tbSet=SET tbOut=OUT ' +
+        'tbNov=NOV tbDez=DEZ')) ('guias=' + ($abasMesLfm -join ' '))
     # Colunas declaradas nas duas grades de gestao: com Columns.Count > 0 o
     # LCL nao cria coluna automatica, entao a coluna de "id" (autoincrement,
     # sem serventia na tela) simplesmente nao existe - e a ordem de exibicao
@@ -1019,6 +1134,39 @@ try {
         ($pasTexto -match 'substr\(enddate, 1, 4\) FROM saldos') -and
         (-not ($pasTexto -match 'substr\(dtposted, 1, 4\) FROM extratos'))) (
         'consulta de anos do cbYear nao vem de saldos.enddate')
+    # As guias JAN..DEZ sao o cabecalho da tela de extratos e so' aparecem
+    # nos meses com saldo no ano do cbYear (mes = caracteres 6..7 de
+    # enddate), com a aba ativa no mes mais recente. Os blocos sao lidos do
+    # .pas inteiros (e nao por texto solto) para a checagem pegar o corpo do
+    # procedimento certo.
+    $blocoAbasMes = ''
+    if ($pasTexto -match '(?s)procedure\s+TFormMoney\.AtualizarAbasMes.*?\nend;') {
+        $blocoAbasMes = $Matches[0]
+    }
+    Check 'guias de mes vao dos saldos do ano escolhido (.pas)' (
+        ($blocoAbasMes -match 'substr\(enddate, 6, 2\) FROM saldos') -and
+        ($blocoAbasMes -match 'substr\(enddate, 1, 4\) = ')) (
+        'AtualizarAbasMes nao consulta os meses de saldos.enddate')
+    Check 'aba ativa vai para o mes mais recente (.pas)' (
+        $blocoAbasMes -match 'PageControl1\.ActivePage := AbaDoMes\(ultimoMes\)') (
+        'AtualizarAbasMes nao ativa o ultimo mes com saldo')
+    $blocoCbYearMes = ''
+    if ($pasTexto -match '(?s)procedure\s+TFormMoney\.cbYearChange.*?\nend;') {
+        $blocoCbYearMes = $Matches[0]
+    }
+    Check 'trocar o ano recalcula as guias de mes (.pas)' (
+        $blocoCbYearMes -match 'AtualizarAbasMes') (
+        'cbYearChange nao chama AtualizarAbasMes')
+    $blocoFiltrosMes = ''
+    if ($pasTexto -match '(?s)procedure\s+TFormMoney\.CarregarFiltrosExtratos.*?\nend;') {
+        $blocoFiltrosMes = $Matches[0]
+    }
+    Check 'abrir o database recalcula as guias de mes (.pas)' (
+        $blocoFiltrosMes -match 'AtualizarAbasMes') (
+        'CarregarFiltrosExtratos nao chama AtualizarAbasMes')
+    Check 'cbYear abre no ano mais recente de saldos (.pas)' (
+        $pasTexto -match 'ORDER BY substr\(enddate, 1, 4\) DESC') (
+        'lista de anos nao vai do mais recente para o mais antigo')
 
     # ------------------------------------------------ [2] cria o banco
     Write-Banner '[2/11] Sem banks.db -> deve criar o arquivo'
@@ -1422,13 +1570,19 @@ try {
         # Linhas de teste em "saldos" ANTES de abrir (o arquivo tem de estar
         # livre): a grade da tbSaldos so' prova que esta' ligada a tabela se
         # houver linhas para mostrar - 150, para passar do que cabe na tela.
-        # Os DOIS anos (75 + 75) tambem sao o que o cbYear tem de listar:
-        # a lista de anos do combo vem de saldos.enddate.
-        $nSal2025 = Add-SaldosRows $minewDb 75 '2025'
-        $nSal2026 = Add-SaldosRows $minewDb 75 '2026'
+        # Os DOIS anos (2025 e 2026) tambem sao o que o cbYear tem de listar
+        # (a lista vem de saldos.enddate, do mais recente para o mais
+        # antigo), e os MESES decidem quais guias JAN..DEZ aparecem: 2026
+        # com saldo em JAN/FEV/MAR, 2025 so' em JAN.
+        $nSal2601 = Add-SaldosRows $minewDb 25 '2026' '01'
+        $nSal2602 = Add-SaldosRows $minewDb 25 '2026' '02'
+        $nSal2603 = Add-SaldosRows $minewDb 25 '2026' '03'
+        $nSal2501 = Add-SaldosRows $minewDb 75 '2025' '01'
         Check 'linhas de teste gravadas em "saldos" (passo [8])' (
-            ($nSal2025 -eq 75) -and ($nSal2026 -eq 150)) (
-            '2025=' + $nSal2025 + ' 2026=' + $nSal2026)
+            ($nSal2601 -eq 25) -and ($nSal2602 -eq 50) -and
+            ($nSal2603 -eq 75) -and ($nSal2501 -eq 150)) (
+            '2026-01=' + $nSal2601 + ' 2026-02=' + $nSal2602 +
+            ' 2026-03=' + $nSal2603 + ' 2025-01=' + $nSal2501)
         # Mesma prova para a tela de extratos: dois anos em "extratos" (75 +
         # 75) casando com os anos de "saldos" - o filtro do ano selecionado
         # tem de deixar passar as linhas desse ano.
@@ -1506,11 +1660,11 @@ try {
             Check 'interface revelada apos o miOpen (sem navegar)' (
                 $visAb8.Count -gt 0) ('janelas=' + $visAb8.Count)
 
-            # 150 linhas em "saldos" (75 de 2025 + 75 de 2026): o combo de
-            # ano - que le a lista de saldos.enddate - tem de listar os dois e
-            # comecar na mais antiga, e' ele que alimenta o filtro da query da
-            # grade de extratos. "contas" segue vazia, entao o combo de conta
-            # continua sem nenhuma linha.
+            # 150 linhas em "saldos" (75 em 2025 so' em JAN; 75 em 2026 em
+            # JAN/FEV/MAR): o combo de ano - que le a lista de saldos.enddate -
+            # tem de listar os dois anos, do mais RECENTE (2026) para o mais
+            # antigo, e e' o primeiro que fica selecionado. "contas" segue
+            # vazia, entao o combo de conta continua sem nenhuma linha.
             $cbAno8   = Find-ComboHwnd $mainNav 100
             $cbConta8 = Find-ComboHwnd $mainNav 212
             $nAno8    = Get-ComboCount $cbAno8
@@ -1522,10 +1676,50 @@ try {
             }
             Check 'cbYear lista os 2 anos de "saldos"' ($nAno8 -eq 2) (
                 'combo=' + $cbAno8 + ' itens=' + $nAno8)
-            Check 'cbYear comeca no ano mais antigo (selecao 0)' ($selAno8 -eq 0) (
-                'combo=' + $cbAno8 + ' selecao=' + $selAno8)
+            Check 'cbYear comeca no ano mais recente (selecao 0 = 2026)' (
+                $selAno8 -eq 0) ('combo=' + $cbAno8 + ' selecao=' + $selAno8)
             Check 'cbAccount sem itens ("contas" vazia, passo [8])' (
                 $nConta8 -eq 0) ('combo=' + $cbConta8 + ' itens=' + $nConta8)
+
+            # ---- Guias de mes do PageControl1: so' os meses com saldo no ano
+            # selecionado aparecem (2026 tem JAN/FEV/MAR = 3 guias) e a aba
+            # ativa e' o mes mais recente - a ULTIMA guia da faixa, ja' que as
+            # guias JAN..DEZ vem em ordem crescente (a ordem das legendas esta
+            # no .lfm, checado no passo [1]; aqui so' da para contar e ler a
+            # posicao - TCM_GETITEM le ponteiro do processo do alvo).
+            $guia8 = Find-TabHwnd $mainNav
+            Check 'faixa de guias de mes encontrada (passo [8])' (
+                $guia8 -ne [IntPtr]::Zero) ('hwnd=' + $guia8)
+            $nGuias8 = [UiTest]::TabCount($guia8)
+            Check 'guias de mes = meses com saldo no ano (3 em 2026)' (
+                $nGuias8 -eq 3) ('guias=' + $nGuias8)
+            Check 'aba ativa = mes mais recente (MAR = ultima guia)' (
+                ([UiTest]::TabSel($guia8) -eq ($nGuias8 - 1)) -and
+                ($nGuias8 -eq 3)) ('sel=' + [UiTest]::TabSel($guia8) +
+                ' de ' + $nGuias8)
+
+            # Trocar o ano refaz a faixa: 2025 so' tem saldo em janeiro, entao
+            # sobra uma guia (a de janeiro, unica do ano) e ela vira a ativa.
+            # E' o mesmo caminho do clique do usuario - CB_SETCURSEL +
+            # CBN_SELCHANGE no pai dispara o OnChange do LCL.
+            Check 'cbYear trocado para 2025 (passo [8])' (
+                [UiTest]::SelectCombo($cbAno8, 1))
+            $vivaAno25 = -not $pNav.HasExited
+            Check 'aplicacao viva apos trocar o ano (passo [8])' ($vivaAno25) (
+                'o WM_COMMAND do cbYear derrubou a aplicacao')
+            $guia25 = Find-TabHwnd $mainNav
+            $nGuias25 = [UiTest]::TabCount($guia25)
+            Check 'ano 2025 deixa so a guia de janeiro' ($nGuias25 -eq 1) (
+                'guias=' + $nGuias25 + ' hwnd=' + $guia25)
+            Check 'aba ativa em janeiro no ano 2025' (
+                [UiTest]::TabSel($guia25) -eq 0) (
+                'sel=' + [UiTest]::TabSel($guia25))
+            # Volta para o ano inicial: os passos seguintes esperam 2026 (o
+            # mais recente) e as 3 guias dele.
+            [void][UiTest]::SelectCombo($cbAno8, 0)
+            $nGuiasVolta = [UiTest]::TabCount((Find-TabHwnd $mainNav))
+            Check 'cbYear de volta ao ano com as 3 guias' ($nGuiasVolta -eq 3) (
+                'guias=' + $nGuiasVolta)
 
             # Com database o menu "Transacoes" volta a funcionar todo - e o
             # "Gerenciar Contas" volta a ser navegavel (e' ele o proximo passo).
@@ -1610,7 +1804,8 @@ try {
                 # daqui pra baixo o ciclo comeca do estado vazio de novo.
                 $visFec8 = @(Wait-Interface $mainNav $false)
                 Check 'interface oculta apos o Fechar Database' ($visFec8.Count -eq 0) (
-                    'janelas=' + $visFec8.Count)
+                    'janelas=' + $visFec8.Count + ' :: ' +
+                    ($visFec8 -join ' | '))
 
                 # E o menu "Transacoes" volta a ficar todo desabilitado.
                 $mmNav = [UiTest]::MenuTopState($mainNav, 'Importar OFC/OFX')
@@ -1843,7 +2038,8 @@ try {
 
         # Estado inicial das combos: 1 conta (a criada acima) e os 2 anos que
         # ja estao em "saldos" (2025 e 2026, do passo [8]) - e' de
-        # saldos.enddate que o cbYear monta a lista.
+        # saldos.enddate que o cbYear monta a lista, do mais recente (2026)
+        # para o mais antigo, e e' o primeiro que fica selecionado.
         $cbContaA = Find-ComboHwnd $mainImp 212
         $cbAnoA   = Find-ComboHwnd $mainImp 100
         $nContaA  = Get-ComboCount $cbContaA
@@ -1866,8 +2062,9 @@ try {
 
         # Depois do resultado as combos ja foram recarregadas. A importacao
         # grava em "extratos", entao NADA muda na lista de anos (ela vem de
-        # "saldos"): continuam 2 itens, com 2025 ainda na frente - e a
-        # selecao, devolvida pelo texto salvo, tem de seguir 2025 (indice 0).
+        # "saldos"): continuam 2 itens, com 2026 na frente (ordem decrescente)
+        # - e a selecao, devolvida pelo texto salvo, tem de seguir 2026
+        # (indice 0).
         $cbContaB = Find-ComboHwnd $mainImp 212
         $cbAnoB   = Find-ComboHwnd $mainImp 100
         $nContaB  = Get-ComboCount $cbContaB
@@ -1877,8 +2074,14 @@ try {
             'itens=' + $nContaB)
         Check 'cbYear segue com 2 anos (o arquivo nao muda a lista de saldos)' (
             $nAnoB -eq 2) ('itens=' + $nAnoB)
-        Check 'cbYear manteve a selecao do usuario (indice 0 = 2025)' (
+        Check 'cbYear manteve a selecao do usuario (indice 0 = 2026)' (
             $selAnoB -eq 0) ('sel=' + $selAnoB)
+        # As guias de mes tambem vem de "saldos": a importacao nao mexe nelas
+        # - continuam as 3 de janeiro/fevereiro/marco de 2026.
+        $guiaImp = Find-TabHwnd $mainImp
+        Check 'guias de mes inalteradas apos a importacao (JAN FEV MAR)' (
+            [UiTest]::TabCount($guiaImp) -eq 3) (
+            'guias=' + [UiTest]::TabCount($guiaImp) + ' hwnd=' + $guiaImp)
 
         # Reimportar o MESMO arquivo REPETE as linhas: registro igual e'
         # permitido (a conferencia disso e' no arquivo, no fim do passo). Os

@@ -144,7 +144,9 @@ type
     procedure SQLQuerySaldosNewRecord(DataSet: TDataSet);
     procedure toggleShowControlsClick(Sender: TObject);
   private
-    // Estado das guias antes de "Lista de Bancos" (para o "Voltar" devolver)
+    // Estado das guias antes de navegar para uma tela de gestão (para o
+    // "Voltar" devolver - as guias de mês são dinâmicas e o "Voltar" as
+    // recalcula pelo saldo do ano, em vez de só restaurar este estado).
     FSavedTabVisible: array of Boolean;
     FInListView: Boolean;
     // Título da tela normal (mês) antes de entrar na lista de bancos
@@ -169,6 +171,15 @@ type
     // A lista de anos vem de saldos.enddate (o filtro continua em dtposted).
     procedure CarregarFiltrosExtratos;
     procedure AplicarFiltroExtratos;
+    // Guias de mês da tela de extratos (1 = tbJan ... 12 = tbDez): aparecem
+    // só nos meses que têm saldo no ano do cbYear, com a aba ativa no mês
+    // mais recente. Roda ao carregar os filtros, ao trocar o ano e no
+    // "Voltar"; sem database a chamada não faz nada (é o estado do "Fechar
+    // Database", que esconde a interface e deixa a próxima abertura
+    // recalcular). É o único ponto que liga/desliga essas guias fora da
+    // navegação de gestão (NavigateToTab esconde todas).
+    procedure AtualizarAbasMes;
+    function AbaDoMes(AMes: Integer): TTabSheet;
     // Grade de saldos da tbSaldos: mesma regra do filtro de extratos - só os
     // registros da conta escolhida no cbAccount (combo vazia não restringe).
     // É o único ponto de Open de SQLQuerySaldos: quem abre/reabre é aqui.
@@ -233,6 +244,9 @@ procedure TFormMoney.cbYearChange(Sender: TObject);
 begin
   // Mesmo caminho do cbAccountChange: mudou o ano, refaz o filtro da grade.
   AplicarFiltroExtratos;
+  // ... e as guias de mês: elas são os meses com saldo NO ANO escolhido
+  // (saldos.enddate), então trocar o ano muda o cabeçalho da tela.
+  AtualizarAbasMes;
 end;
 
 procedure TFormMoney.FormCreate(Sender: TObject);
@@ -329,10 +343,15 @@ begin
     FSavedTitle := lblTitle.Caption;
     FInListView := True;
   end;
-  // Ativar antes de esconder: evita que o LCL troque de página sozinho.
-  PageControl1.ActivePage := ATab;
+  // Esconde as guias ANTES de ativar a de destino: com as guias de mês
+  // ligadas (elas aparecem quando há saldo), ativar primeiro faria o LCL
+  // trocar de página sozinho quando a guia escondida fosse a ativa
+  // (TTabSheet.SetTabVisible -> PageRemoved -> próxima guia visível).
+  // Escondidas todas, ativar a página de gestão e por último revelar a
+  // interface - a revelação é que roda a régua da tela pela página ativa.
   for i := 0 to PageControl1.PageCount - 1 do
     PageControl1.Pages[i].TabVisible := False;
+  PageControl1.ActivePage := ATab;
   // Revela SEMPRE e por último: o "Fechar Database" esconde a interface até
   // com a lista na tela, e navegar de novo tem de trazê-la de volta. Como é
   // a última linha, a régua vale a página recém-ativada (mesmo quando o
@@ -474,9 +493,10 @@ begin
   // Ano: consulta direta na mesma conexão, porque a query da grade ainda não
   // abriu — e ela justamente depende do filtro que está sendo montado aqui.
   // A lista vem de "saldos" (enddate), não de "extratos": é o pedido — os
-  // anos mostrados refletem o fim de período dos saldos gravados. O filtro
-  // em si continua em dtposted (a grade é de extratos); se os dois conjuntos
-  // de anos divergirem, vale o que o combo listar.
+  // anos mostrados refletem o fim de período dos saldos gravados, do MAIS
+  // RECENTE para o mais antigo, e é o primeiro item que fica selecionado ao
+  // abrir. O filtro em si continua em dtposted (a grade é de extratos); se
+  // os dois conjuntos de anos divergirem, vale o que o combo listar.
   // Só entra ano de verdade (4 dígitos): enddate é texto, qualquer outra
   // coisa nessa posição não é ano para ninguém.
   consulta := TSQLQuery.Create(nil);
@@ -485,7 +505,7 @@ begin
     consulta.Transaction := SQLTransactionContas;
     consulta.SQL.Text :=
       'SELECT DISTINCT substr(enddate, 1, 4) FROM saldos' +
-      ' ORDER BY substr(enddate, 1, 4);';
+      ' ORDER BY substr(enddate, 1, 4) DESC;';
     consulta.Open;
     while not consulta.EOF do
     begin
@@ -505,9 +525,130 @@ begin
     cbYear.Items.Add(FormatDateTime('yyyy', Date));
   cbYear.ItemIndex := 0;
 
+  // Guias de mês do ano acabado de escolher (o ItemIndex acima costuma
+  // disparar o OnChange, mas a chamada explícita cobre o caso dele não
+  // disparar): só os meses com saldo aparecem e a aba ativa vai para o
+  // mais recente.
+  AtualizarAbasMes;
+
   // Garante a seleção final mesmo se nenhuma das combos disparar OnChange
   // ao ganhar o primeiro ItemIndex.
   AplicarFiltroExtratos;
+end;
+
+// Guia de mês da tela de extratos: 1 = tbJan ... 12 = tbDez. Os nomes não
+// seguem padrão (tbFev, tbAbr...), então o case é o tradutor - e ele também
+// protege o chamador de um mês vindo fora do intervalo (devolve nil).
+function TFormMoney.AbaDoMes(AMes: Integer): TTabSheet;
+begin
+  case AMes of
+    1: Result := tbJan;
+    2: Result := tbFev;
+    3: Result := tbMar;
+    4: Result := tbAbr;
+    5: Result := tbMai;
+    6: Result := tbJun;
+    7: Result := tbJul;
+    8: Result := tbAgo;
+    9: Result := tbSet;
+    10: Result := tbOut;
+    11: Result := tbNov;
+    12: Result := tbDez;
+  else
+    Result := nil;
+  end;
+end;
+
+// As guias JAN..DEZ são o cabeçalho de navegação da tela de extratos e só
+// aparecem nos meses que têm saldo no ano do cbYear (mesma origem da lista
+// de anos: saldos.enddate). A aba ativa vai para o mês mais recente - é o
+// que define "hoje" quando o database abre e quando o ano muda.
+procedure TFormMoney.AtualizarAbasMes;
+var
+  i, ano, mes, ultimoMes: Integer;
+  temMes: array[1..12] of Boolean;
+  consulta: TSQLQuery;
+begin
+  // Sem database não há guia de mês para mostrar — e é justamente o estado do
+  // "Fechar Database", onde a interface já foi escondida ANTES de as combos
+  // esvaziarem (AtualizarEstadoDatabase). Mexer nas guias agora dispararia o
+  // PageControl1Change na hora errada, e ele reergueria o rodapé e os textos
+  // "Anterior" que o SetInterfaceVisible(False) acabou de esconder. As guias
+  // voltam a ser calculadas na próxima abertura (CarregarFiltrosExtratos) e a
+  // navegação esconde todas (NavigateToTab).
+  if not DatabaseAberto then
+    Exit;
+
+  for i := 1 to 12 do
+    temMes[i] := False;
+
+  // Nas telas de gestão quem manda na guia é NavigateToTab (esconde todas e
+  // ativa a página pedida, deixando o cabeçalho de mês para o "Voltar").
+  // Esse ajuste é da tela de extratos - que é onde o cbYear vive.
+  if (PageControl1.ActivePage = tbBancos) or
+     (PageControl1.ActivePage = tbContas) or
+     (PageControl1.ActivePage = tbSaldos) then
+    Exit;
+
+  // Ano do combo, com o mesmo critério de "4 dígitos" do preenchimento dele:
+  // sem ano escolhido (combo vazia) não há mês para mostrar. Database já
+  // conferido no início do procedimento.
+  ano := -1;
+  if (cbYear.ItemIndex >= 0) and (cbYear.ItemIndex < cbYear.Items.Count) then
+    ano := StrToIntDef(Trim(cbYear.Items[cbYear.ItemIndex]), -1);
+
+  if ano >= 0 then
+  begin
+    // Consulta própria na mesma conexão (mesmo caminho do ano do cbYear):
+    // meses do ano escolhido, direto de enddate. enddate é texto ISO, então
+    // o mês são os caracteres 6..7 ("2026-03-31" -> "03").
+    consulta := TSQLQuery.Create(nil);
+    try
+      consulta.Database := SQLite3ConnContas;
+      consulta.Transaction := SQLTransactionContas;
+      consulta.SQL.Text :=
+        'SELECT DISTINCT substr(enddate, 6, 2) FROM saldos' +
+        ' WHERE substr(enddate, 1, 4) = ' + QuotedStr(IntToStr(ano)) + ';';
+      consulta.Open;
+      while not consulta.EOF do
+      begin
+        mes := StrToIntDef(Trim(consulta.Fields[0].AsString), 0);
+        if (mes >= 1) and (mes <= 12) then
+          temMes[mes] := True;
+        consulta.Next;
+      end;
+      consulta.Close;
+    finally
+      consulta.Free;
+    end;
+  end;
+
+  // As guias de gestão nunca têm cabeçalho (não é por aqui que elas
+  // aparecem): esconder aqui também tira do estado a dependência do .lfm,
+  // que o IDE pode reescrever ao salvar.
+  tbBancos.TabVisible := False;
+  tbContas.TabVisible := False;
+  tbSaldos.TabVisible := False;
+
+  // Esconde/mostra as doze e anota o ÚLTIMO mês com saldo - como as guias
+  // JAN..DEZ estão em ordem crescente, o último é o mais recente.
+  // Ordem importa: esconder a guia ativa faz o LCL procurar outra página
+  // visível (TTabSheet.SetTabVisible -> PageRemoved), então a aba final é
+  // escolhida depois, com todas as guias já no lugar.
+  ultimoMes := 0;
+  for i := 1 to 12 do
+  begin
+    if temMes[i] then
+      ultimoMes := i;
+    AbaDoMes(i).TabVisible := temMes[i];
+  end;
+
+  if ultimoMes > 0 then
+    PageControl1.ActivePage := AbaDoMes(ultimoMes)
+  else if PageControl1.ActivePage = nil then
+    // Sem saldo no ano a última guia some e o LCL deixa a página sem guia
+    // ativa (FPageIndex = -1). Volta para tbJan, que é a página de entrada.
+    PageControl1.ActivePage := tbJan;
 end;
 
 procedure TFormMoney.AplicarFiltroExtratos;
@@ -529,8 +670,10 @@ begin
     condicao := 'account_id = ' + IntToStr(idConta);
   end;
 
-  // Período = ano: não existe seletor de mês (as guias JAN..DEZ estão todas
-  // ocultas). dtposted é texto ISO (YYYY-MM-DD...), então o ano são os 4
+  // Período = ano: não existe seletor de mês NA GRADE (as guias JAN..DEZ
+  // são o cabeçalho da tela e marcam os meses com saldo no ano, mas não
+  // filtram - quem decide o período mostrado é o ano do cbYear).
+  // dtposted é texto ISO (YYYY-MM-DD...), então o ano são os 4
   // primeiros caracteres — que também batem no formato OFX (YYYYMMDD...).
   // O valor é validado como número antes de entrar na query e a comparação
   // é contra texto, para o SQLite não trocar de tipo no meio da expressão.
@@ -846,6 +989,9 @@ begin
   // isso dispara não reabre nada (AplicarFiltroExtratos exige database).
   cbAccount.Items.Clear;
   cbYear.Items.Clear;
+  // Sem ano escolhido não há guia de mês para mostrar (a chamada explícita
+  // cobre o caso do OnChange não disparar na limpeza).
+  AtualizarAbasMes;
 end;
 
 procedure TFormMoney.miCloseClick(Sender: TObject);
@@ -1175,8 +1321,8 @@ procedure TFormMoney.sbtnVoltarClick(Sender: TObject);
 var
   i: Integer;
 begin
-  // Devolve as guias que estavam visíveis (JAN e Saldos no estado atual)
-  // e volta para a página de mês.
+  // Devolve as guias que estavam visíveis (as de mês com saldo no ano
+  // escolhido) e volta para a página de mês.
   if FInListView and (Length(FSavedTabVisible) = PageControl1.PageCount) then
   begin
     for i := 0 to PageControl1.PageCount - 1 do
@@ -1184,6 +1330,11 @@ begin
     FInListView := False;
   end;
   PageControl1.ActivePage := tbJan;
+  // As guias de mês são dinâmicas: o que a tela de gestão mexeu em "saldos"
+  // pode ter mudado os meses do ano, então recarrega pelo dado da tabela e
+  // põe a aba ativa no mês mais recente. Sem database a chamada é que esconde
+  // as guias devolvidas pela restauração acima.
+  AtualizarAbasMes;
   // Depois do OnChange acima (senão o rodapé voltaria a aparecer): sem
   // database em aberto não há o que mostrar na tela de extratos, então o
   // "Voltar" devolve o estado inicial (só o MainMenu). Com database (miNew/
