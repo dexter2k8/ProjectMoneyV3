@@ -449,16 +449,19 @@ function Test-LfmLabels($Colunas, $Esperado) {
     return $null
 }
 
-# Grava N linhas em "saldos" (a tabela da tbSaldos) direto no arquivo: e' o
-# que a grade da pagina tem de mostrar depois de abrir o database. O arquivo
-# tem de estar LIVRE (conexao encerrada). Devolve as linhas gravadas (0 =
-# arquivo ausente/falhou - quem reporta e' o chamador).
-function Add-SaldosRows([string]$Path, [int]$Count) {
+# Grava N linhas em "saldos" (a tabela da tbSaldos) direto no arquivo, todas
+# datadas do ano informado: e' de saldos.enddate que o cbYear le a lista de
+# anos, entao o ano gravado aqui e' o que o combo tem de mostrar. O arquivo
+# tem de estar LIVRE (conexao encerrada). Devolve o TOTAL de linhas de
+# "saldos" apos o INSERT (0 = arquivo ausente/falhou - quem reporta e' o
+# chamador).
+function Add-SaldosRows([string]$Path, [int]$Count, [string]$Ano) {
     if (-not (Test-Path $Path)) { return 0 }
     # O INSERT com CTE recursivo grava tudo em uma unica sentenca.
     $sql = 'WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c' +
         ' WHERE x < ' + $Count + ') INSERT INTO "saldos"' +
-        " (account_id, balance, enddate) SELECT 1, x * 1.5, '2026-01-31' FROM c;"
+        " (account_id, balance, enddate) SELECT 1, x * 1.5, '" + $Ano +
+        "-01-31' FROM c;"
     if ([Sq]::Executar($Path, $sql) -le 0) { return 0 }
     # Le do proprio arquivo o numero de linhas que ficou: devolver o pedido sem
     # conferir esconderia um INSERT que nao deu certo.
@@ -1009,6 +1012,13 @@ try {
         ($pasTexto -match
             'procedure\s+TFormMoney\.SQLQuerySaldosNewRecord')) (
         'handler SQLQuerySaldosNewRecord ausente')
+    # A lista de anos do cbYear vem de saldos.enddate (e nao de
+    # extratos.dtposted): e' o que CarregarFiltrosExtratos consulta. O
+    # negativo pega um "volta para extratos" sem trocar o SELECT inteiro.
+    Check 'cbYear preenchido com os anos de saldos.enddate (.pas)' (
+        ($pasTexto -match 'substr\(enddate, 1, 4\) FROM saldos') -and
+        (-not ($pasTexto -match 'substr\(dtposted, 1, 4\) FROM extratos'))) (
+        'consulta de anos do cbYear nao vem de saldos.enddate')
 
     # ------------------------------------------------ [2] cria o banco
     Write-Banner '[2/11] Sem banks.db -> deve criar o arquivo'
@@ -1204,14 +1214,14 @@ try {
             # Mesma revelacao do passo [5], agora pelo caminho do miOpen.
             Check 'gridTrans exibida apos o miOpen' (
                 Test-GridVisivel $mainAbrir)
-            # Combos de filtro da tela de extratos: "contas" e "extratos" estao
+            # Combos de filtro da tela de extratos: "contas" e "saldos" estao
             # vazias neste ponto (database recem-criado no passo [5]), entao e'
             # aqui que a regra do "ano atual" e a lista de contas aparecem.
             $cbConta6 = Find-ComboHwnd $mainAbrir 212
             $cbAno6   = Find-ComboHwnd $mainAbrir 100
             $nConta6  = Get-ComboCount $cbConta6
             $nAno6    = Get-ComboCount $cbAno6
-            Check 'cbYear lista o ano atual ("extratos" vazio)' ($nAno6 -eq 1) (
+            Check 'cbYear lista o ano atual ("saldos" vazio)' ($nAno6 -eq 1) (
                 'combo=' + $cbAno6 + ' itens=' + $nAno6)
             Check 'cbAccount sem itens ("contas" vazia)' ($nConta6 -eq 0) (
                 'combo=' + $cbConta6 + ' itens=' + $nConta6)
@@ -1412,12 +1422,16 @@ try {
         # Linhas de teste em "saldos" ANTES de abrir (o arquivo tem de estar
         # livre): a grade da tbSaldos so' prova que esta' ligada a tabela se
         # houver linhas para mostrar - 150, para passar do que cabe na tela.
-        $nLinhas = Add-SaldosRows $minewDb 150
-        Check 'linhas de teste gravadas em "saldos" (passo [8])' ($nLinhas -eq 150) (
-            'linhas=' + $nLinhas)
+        # Os DOIS anos (75 + 75) tambem sao o que o cbYear tem de listar:
+        # a lista de anos do combo vem de saldos.enddate.
+        $nSal2025 = Add-SaldosRows $minewDb 75 '2025'
+        $nSal2026 = Add-SaldosRows $minewDb 75 '2026'
+        Check 'linhas de teste gravadas em "saldos" (passo [8])' (
+            ($nSal2025 -eq 75) -and ($nSal2026 -eq 150)) (
+            '2025=' + $nSal2025 + ' 2026=' + $nSal2026)
         # Mesma prova para a tela de extratos: dois anos em "extratos" (75 +
-        # 75) para o combo de ano listar os dois e o filtro abrir com o ano
-        # mais antigo selecionado.
+        # 75) casando com os anos de "saldos" - o filtro do ano selecionado
+        # tem de deixar passar as linhas desse ano.
         $n2025 = Add-ExtratosRows $minewDb 75 '2025'
         $n2026 = Add-ExtratosRows $minewDb 75 '2026'
         Check 'linhas de teste gravadas em "extratos" (passo [8])' (
@@ -1492,10 +1506,11 @@ try {
             Check 'interface revelada apos o miOpen (sem navegar)' (
                 $visAb8.Count -gt 0) ('janelas=' + $visAb8.Count)
 
-            # 150 linhas em "extratos" (75 de 2025 + 75 de 2026): o combo de
-            # ano tem de listar as duas e comecar na mais antiga - e' ele que
-            # alimenta o filtro da query da grade. "contas" segue vazia, entao
-            # o combo de conta continua sem nenhuma linha.
+            # 150 linhas em "saldos" (75 de 2025 + 75 de 2026): o combo de
+            # ano - que le a lista de saldos.enddate - tem de listar os dois e
+            # comecar na mais antiga, e' ele que alimenta o filtro da query da
+            # grade de extratos. "contas" segue vazia, entao o combo de conta
+            # continua sem nenhuma linha.
             $cbAno8   = Find-ComboHwnd $mainNav 100
             $cbConta8 = Find-ComboHwnd $mainNav 212
             $nAno8    = Get-ComboCount $cbAno8
@@ -1505,7 +1520,7 @@ try {
                 $selAno8 = [int64][UiTest]::Msg($cbAno8, 0x0147,  # CB_GETCURSEL
                     [IntPtr]::Zero, [IntPtr]::Zero)
             }
-            Check 'cbYear lista os 2 anos de "extratos"' ($nAno8 -eq 2) (
+            Check 'cbYear lista os 2 anos de "saldos"' ($nAno8 -eq 2) (
                 'combo=' + $cbAno8 + ' itens=' + $nAno8)
             Check 'cbYear comeca no ano mais antigo (selecao 0)' ($selAno8 -eq 0) (
                 'combo=' + $cbAno8 + ' selecao=' + $selAno8)
@@ -1827,7 +1842,8 @@ try {
             'janelas=' + $visImp.Count)
 
         # Estado inicial das combos: 1 conta (a criada acima) e os 2 anos que
-        # ja estao em "extratos" (2025 e 2026, do passo [8]).
+        # ja estao em "saldos" (2025 e 2026, do passo [8]) - e' de
+        # saldos.enddate que o cbYear monta a lista.
         $cbContaA = Find-ComboHwnd $mainImp 212
         $cbAnoA   = Find-ComboHwnd $mainImp 100
         $nContaA  = Get-ComboCount $cbContaA
@@ -1848,9 +1864,10 @@ try {
         $pImp.Refresh()
         Check 'aplicacao viva apos a 1a importacao' (-not $pImp.HasExited)
 
-        # Depois do resultado as combos ja foram recarregadas: 2024 entrou na
-        # lista (4a linha da fixture) e a selecao tem de voltar para o ano que
-        # o usuario tinha escolhido (2025 = indice 1 depois que 2024 entra).
+        # Depois do resultado as combos ja foram recarregadas. A importacao
+        # grava em "extratos", entao NADA muda na lista de anos (ela vem de
+        # "saldos"): continuam 2 itens, com 2025 ainda na frente - e a
+        # selecao, devolvida pelo texto salvo, tem de seguir 2025 (indice 0).
         $cbContaB = Find-ComboHwnd $mainImp 212
         $cbAnoB   = Find-ComboHwnd $mainImp 100
         $nContaB  = Get-ComboCount $cbContaB
@@ -1858,14 +1875,14 @@ try {
         $selAnoB  = [int64][UiTest]::Msg($cbAnoB, 0x0147, [IntPtr]::Zero, [IntPtr]::Zero)
         Check 'cbAccount continua com a conta de destino' ($nContaB -eq 1) (
             'itens=' + $nContaB)
-        Check 'cbYear passou a listar 3 anos (2024 veio do arquivo)' (
-            $nAnoB -eq 3) ('itens=' + $nAnoB)
-        Check 'cbYear manteve a selecao do usuario (indice 1 = 2025)' (
-            $selAnoB -eq 1) ('sel=' + $selAnoB)
+        Check 'cbYear segue com 2 anos (o arquivo nao muda a lista de saldos)' (
+            $nAnoB -eq 2) ('itens=' + $nAnoB)
+        Check 'cbYear manteve a selecao do usuario (indice 0 = 2025)' (
+            $selAnoB -eq 0) ('sel=' + $selAnoB)
 
         # Reimportar o MESMO arquivo REPETE as linhas: registro igual e'
-        # permitido (a conferencia disso e' no arquivo, no fim do passo). O
-        # ano da combo nao muda, ja' que os anos do arquivo ja' la' estao.
+        # permitido (a conferencia disso e' no arquivo, no fim do passo). Os
+        # anos continuam os mesmos, ja' que a lista vem de "saldos".
         $dlgImp2 = Invoke-Importar $pImp $ofxUtf8
         Check 'dialogo de resultado da reimportacao' ($dlgImp2 -ne [IntPtr]::Zero)
         if ($dlgImp2 -ne [IntPtr]::Zero) {
@@ -1875,10 +1892,10 @@ try {
         }
         $cbAnoC = Find-ComboHwnd $mainImp 100
         Check 'cbYear inalterado apos a reimportacao' (
-            (Get-ComboCount $cbAnoC) -eq 3) ('itens=' + (Get-ComboCount $cbAnoC))
+            (Get-ComboCount $cbAnoC) -eq 2) ('itens=' + (Get-ComboCount $cbAnoC))
 
-        # Extrato em ANSI: o parser tem de converte-los para UTF-8. O ano e'
-        # 2024 (ja existia), entao a lista de anos nao muda.
+        # Extrato em ANSI: o parser tem de converte-los para UTF-8. O arquivo
+        # nao mexe em "saldos", entao a lista de anos nao muda.
         $dlgImp3 = Invoke-Importar $pImp $ofxAnsi
         Check 'dialogo de resultado da importacao ANSI' ($dlgImp3 -ne [IntPtr]::Zero)
         if ($dlgImp3 -ne [IntPtr]::Zero) {
@@ -1887,8 +1904,8 @@ try {
                 Wait-DialogClosed $dlgImp3)
         }
         $cbAnoD = Find-ComboHwnd $mainImp 100
-        Check 'cbYear segue com 3 anos (2024 ja existia no arquivo)' (
-            (Get-ComboCount $cbAnoD) -eq 3) ('itens=' + (Get-ComboCount $cbAnoD))
+        Check 'cbYear segue com 2 anos (importacao nao mexe em "saldos")' (
+            (Get-ComboCount $cbAnoD) -eq 2) ('itens=' + (Get-ComboCount $cbAnoD))
 
         # Arquivo de outra conta: o aviso tem de vir no lugar do resultado.
         $dlgImp4 = Invoke-Importar $pImp $ofxOutraConta
@@ -1899,10 +1916,10 @@ try {
                 Wait-DialogClosed $dlgImp4)
         }
         # A recusa acontece antes de fechar/reabrir as queries, entao as
-        # combos ficam exatamente como estavam (3 anos, 1 conta).
+        # combos ficam exatamente como estavam (2 anos, 1 conta).
         $cbAnoE = Find-ComboHwnd $mainImp 100
         Check 'cbYear inalterado apos a recusa' (
-            (Get-ComboCount $cbAnoE) -eq 3) ('itens=' + (Get-ComboCount $cbAnoE))
+            (Get-ComboCount $cbAnoE) -eq 2) ('itens=' + (Get-ComboCount $cbAnoE))
         $pImp.Refresh()
         Check 'aplicacao viva ao fim das importacoes' (-not $pImp.HasExited)
     }

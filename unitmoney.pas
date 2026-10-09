@@ -166,6 +166,7 @@ type
     // Combos de filtro da tela de extratos (conta e ano): montadas por
     // miNew/miOpen a partir do database aberto, refazem a query da grade
     // quando o usuário troca de seleção e são esvaziadas ao fechar.
+    // A lista de anos vem de saldos.enddate (o filtro continua em dtposted).
     procedure CarregarFiltrosExtratos;
     procedure AplicarFiltroExtratos;
     // Grade de saldos da tbSaldos: mesma regra do filtro de extratos - só os
@@ -472,15 +473,19 @@ begin
 
   // Ano: consulta direta na mesma conexão, porque a query da grade ainda não
   // abriu — e ela justamente depende do filtro que está sendo montado aqui.
-  // Só entra ano de verdade (4 dígitos): dtposted é texto, qualquer outra
+  // A lista vem de "saldos" (enddate), não de "extratos": é o pedido — os
+  // anos mostrados refletem o fim de período dos saldos gravados. O filtro
+  // em si continua em dtposted (a grade é de extratos); se os dois conjuntos
+  // de anos divergirem, vale o que o combo listar.
+  // Só entra ano de verdade (4 dígitos): enddate é texto, qualquer outra
   // coisa nessa posição não é ano para ninguém.
   consulta := TSQLQuery.Create(nil);
   try
     consulta.Database := SQLite3ConnContas;
     consulta.Transaction := SQLTransactionContas;
     consulta.SQL.Text :=
-      'SELECT DISTINCT substr(dtposted, 1, 4) FROM extratos' +
-      ' ORDER BY substr(dtposted, 1, 4);';
+      'SELECT DISTINCT substr(enddate, 1, 4) FROM saldos' +
+      ' ORDER BY substr(enddate, 1, 4);';
     consulta.Open;
     while not consulta.EOF do
     begin
@@ -494,7 +499,7 @@ begin
     consulta.Free;
   end;
 
-  // Sem ano nenhum (extratos vazio, logo depois do "Novo Database") o combo
+  // Sem ano nenhum (saldos vazio, logo depois do "Novo Database") o combo
   // não pode ficar em branco: entra o ano atual e o filtro segue de pé.
   if cbYear.Items.Count = 0 then
     cbYear.Items.Add(FormatDateTime('yyyy', Date));
@@ -988,8 +993,8 @@ begin
     try
       if not SQLQueryContas.Active then
         SQLQueryContas.Open;
-      // Recarrega as combos (o arquivo pode trazer anos que ainda nao
-      // apareciam), devolve a conta e o ano escolhidos e reabre as queries
+      // Recarrega as combos (a lista de anos vem de saldos, entao importar
+      // nao mexe nela), devolve a conta e o ano escolhidos e reabre as queries
       // das duas grades ja' filtradas (extratos e saldos) - e' a grade de
       // extratos que mostra o que acabou de entrar.
       CarregarFiltrosExtratos;
