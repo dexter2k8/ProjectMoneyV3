@@ -264,7 +264,16 @@ object FormMoney: TFormMoney
         Align = alClient
         AutoFillColumns = True
         Color = clWindow
-        Columns = <>
+        Columns = <
+          item
+            FieldName = 'account_id'
+          end
+          item
+            FieldName = 'balance'
+          end
+          item
+            FieldName = 'enddate'
+          end>
         DataSource = DataSourceSaldos
         Options = [dgEditing, dgTitles, dgIndicator, dgColumnResize, dgColumnMove, dgColLines, dgRowLines, dgTabs, dgAlwaysShowSelection, dgConfirmDelete, dgCancelOnExit, dgDisplayMemoText]
         TabOrder = 0
@@ -325,7 +334,35 @@ object FormMoney: TFormMoney
         Align = alClient
         AutoFillColumns = True
         Color = clWindow
-        Columns = <>
+        Columns = <
+          item
+            FieldName = 'acctid'
+            SizePriority = 0
+            Title.Caption = 'Conta'
+            Width = 130
+          end
+          item
+            FieldName = 'accttype'
+            SizePriority = 0
+            Title.Caption = 'Tipo'
+            Width = 100
+          end
+          item
+            FieldName = 'bankid'
+            SizePriority = 0
+            Title.Caption = 'Banco'
+            Width = 80
+          end
+          item
+            FieldName = 'branchid'
+            SizePriority = 0
+            Title.Caption = 'Agência'
+            Width = 80
+          end
+          item
+            FieldName = 'description'
+            Title.Caption = 'Descrição'
+          end>
         DataSource = DataSourceContas
         Options = [dgEditing, dgTitles, dgIndicator, dgColumnResize, dgColumnMove, dgColLines, dgRowLines, dgTabs, dgAlwaysShowSelection, dgConfirmDelete, dgCancelOnExit, dgDisplayMemoText]
         TabOrder = 0

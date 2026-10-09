@@ -815,6 +815,90 @@ try {
         ($lfmTexto -match 'OnChange = cbAccountChange') -and
         ($lfmTexto -match 'OnChange = cbYearChange')) (
         'cbAccountChange e/ou cbYearChange ausentes')
+    # Colunas declaradas nas duas grades de gestao: com Columns.Count > 0 o
+    # LCL nao cria coluna automatica, entao a coluna de "id" (autoincrement,
+    # sem serventia na tela) simplesmente nao existe - e a ordem de exibicao
+    # e' a da propria declaracao. A ausencia do id vira checagem propria: os
+    # needles de ordem so' provam PRESENCA na ordem certa. gridSaldos declara
+    # so' os 3 campos e SEM Width/SizePriority: todas variaveis = larguras
+    # iguais entre si, como no layout automatico (nao vale desigualar elas
+    # de novo sem o id no meio).
+    $blocoContas = Get-LfmBlock $lfmTexto 'gridContas: TDBGrid'
+    $ordemContas = $false
+    $detContas = 'bloco gridContas nao encontrado no .lfm'
+    if ($blocoContas -ne '') {
+        $detContas = 'coluna faltando ou fora de ordem no bloco gridContas'
+        $ordemContas = $true
+        $posContas = -1
+        foreach ($campoContas in @('acctid', 'accttype', 'bankid', 'branchid',
+                'description')) {
+            $posNova = $blocoContas.IndexOf("FieldName = '" + $campoContas + "'")
+            if ($posNova -le $posContas) { $ordemContas = $false; break }
+            $posContas = $posNova
+        }
+        if ($ordemContas -and $blocoContas.Contains("FieldName = 'id'")) {
+            $ordemContas = $false
+            $detContas = 'coluna de "id" declarada no bloco gridContas'
+        }
+    }
+    Check 'gridContas esconde o id e mostra acctid, accttype, bankid, branchid e description (.lfm)' (
+        $ordemContas) $detContas
+    # Rotulos do gridContas: a ordem campo->rotulo no texto prova que o
+    # rotulo e' do campo certo (mesma regra dos rotulos do gridTrans). O
+    # acento vai por [char]: o .ps1 nao tem BOM e o PowerShell o le como
+    # ANSI, o que deixaria a comparacao com o .lfm (UTF-8) fora de fase.
+    # E a concatenacao entra entre parenteses: dentro de @( ) o '+' sozinho
+    # vira outro item do array.
+    $pedacosContas = @(
+        "FieldName = 'acctid'", "Title.Caption = 'Conta'",
+        "FieldName = 'accttype'", "Title.Caption = 'Tipo'",
+        "FieldName = 'bankid'", "Title.Caption = 'Banco'",
+        "FieldName = 'branchid'",
+        ("Title.Caption = 'Ag" + [char]0x00EA + "ncia'"),
+        "FieldName = 'description'",
+        ("Title.Caption = 'Descri" + [char]0x00E7 + [char]0x00E3 + "o'"))
+    $posRotulo = -1
+    $rotulosContas = $false
+    $detRotulos = $detContas
+    if ($blocoContas -ne '') {
+        $detRotulos = 'rotulo faltando ou fora de ordem no bloco gridContas'
+        $rotulosContas = $true
+        foreach ($pedaco in $pedacosContas) {
+            $posNovo = $blocoContas.IndexOf($pedaco)
+            if ($posNovo -le $posRotulo) {
+                $rotulosContas = $false
+                $detRotulos = 'rotulo esperado nao encontrado: ' + $pedaco
+                break
+            }
+            $posRotulo = $posNovo
+        }
+    }
+    Check 'gridContas rotula as colunas (Conta, Tipo, Banco, Agencia, Descricao) (.lfm)' (
+        $rotulosContas) $detRotulos
+    $blocoSaldos = Get-LfmBlock $lfmTexto 'gridSaldos: TDBGrid'
+    $ordemSaldos = $false
+    $detSaldos = 'bloco gridSaldos nao encontrado no .lfm'
+    if ($blocoSaldos -ne '') {
+        $detSaldos = 'coluna faltando ou fora de ordem no bloco gridSaldos'
+        $ordemSaldos = $true
+        $posSaldos = -1
+        foreach ($campoSaldos in @('account_id', 'balance', 'enddate')) {
+            $posNova = $blocoSaldos.IndexOf("FieldName = '" + $campoSaldos + "'")
+            if ($posNova -le $posSaldos) { $ordemSaldos = $false; break }
+            $posSaldos = $posNova
+        }
+        if ($ordemSaldos -and $blocoSaldos.Contains("FieldName = 'id'")) {
+            $ordemSaldos = $false
+            $detSaldos = 'coluna de "id" declarada no bloco gridSaldos'
+        }
+        if ($ordemSaldos -and $blocoSaldos.Contains('SizePriority')) {
+            $ordemSaldos = $false
+            $detSaldos = 'largura fixa declarada no bloco gridSaldos ' +
+                '(as colunas tem de ficar iguais)'
+        }
+    }
+    Check 'gridSaldos esconde o id e mostra account_id, balance e enddate (.lfm)' (
+        $ordemSaldos) $detSaldos
 
     # ------------------------------------------------ [2] cria o banco
     Write-Banner '[2/11] Sem banks.db -> deve criar o arquivo'
