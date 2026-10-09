@@ -139,6 +139,9 @@ type
     // contas: os campos são dinâmicos e cada Open os recria sem handlers —
     // o mesmo problema, e a mesma solução, dos extratos (PrepararCamposExtratos).
     procedure SQLQueryContasAfterOpen(DataSet: TDataSet);
+    // Registro novo da tbSaldos recebe a conta escolhida no cbAccount (a
+    // coluna account_id está oculta na grade - é ela que filtra).
+    procedure SQLQuerySaldosNewRecord(DataSet: TDataSet);
     procedure toggleShowControlsClick(Sender: TObject);
   private
     // Estado das guias antes de "Lista de Bancos" (para o "Voltar" devolver)
@@ -165,6 +168,10 @@ type
     // quando o usuário troca de seleção e são esvaziadas ao fechar.
     procedure CarregarFiltrosExtratos;
     procedure AplicarFiltroExtratos;
+    // Grade de saldos da tbSaldos: mesma regra do filtro de extratos - só os
+    // registros da conta escolhida no cbAccount (combo vazia não restringe).
+    // É o único ponto de Open de SQLQuerySaldos: quem abre/reabre é aqui.
+    procedure AplicarFiltroSaldos;
     // Liga os handlers de exibição da grade de extratos (data, texto memo e
     // valor). Os campos da query são dinâmicos: cada Open os recria sem os
     // handlers, então a ligação é refeita logo depois de abrir — e abrir é
@@ -212,10 +219,13 @@ end;
 
 procedure TFormMoney.cbAccountChange(Sender: TObject);
 begin
-  // Trocou a conta escolhida na tela de extratos: a query da grade reabre já
-  // filtrada pela conta nova (sem database aberto não há o que fazer, e é
-  // esse o caminho do OnChange que a limpeza das combos dispara).
+  // Trocou a conta escolhida: as duas grades que separam por conta reabrem
+  // já filtradas - a de extratos e a de saldos (o cbAccount também fica
+  // visível na tela de Gerenciar Saldos, que é filtrada por ele). Sem
+  // database aberto não há o que fazer, e é esse o caminho do OnChange que a
+  // limpeza das combos dispara.
   AplicarFiltroExtratos;
+  AplicarFiltroSaldos;
 end;
 
 procedure TFormMoney.cbYearChange(Sender: TObject);
@@ -282,10 +292,12 @@ begin
   // quando o painel voltar, o navegador respeitar o toggle.
   DBNavTrans.Visible := exibindoExtrato and toggleShowControls.Checked;
 
-  // Combos do cabeçalho: somem nas três telas de gestão (lista de bancos,
-  // contas e saldos), junto com os textos "Anterior".
+  // Combos do cabeçalho: o de ano é só da tela de extratos; o de conta
+  // continua visível na tbSaldos, porque é ele que filtra a grade de
+  // saldos. Somem nas telas de lista de bancos e de contas, junto com os
+  // textos "Anterior".
   cbYear.Visible := exibindoExtrato;
-  cbAccount.Visible := exibindoExtrato;
+  cbAccount.Visible := exibindoExtrato or exibindoSaldos;
   tsAnterior.Visible := exibindoExtrato;
   tslblAnterior.Visible := exibindoExtrato;
 
@@ -542,6 +554,35 @@ begin
   PrepararCamposExtratos;
 end;
 
+// Grade de saldos da tbSaldos: só os registros da conta escolhida no
+// cbAccount (que fica visível nessa tela justamente por isso). Combo vazia
+// (nenhuma conta cadastrada) não restringe - mesma regra dos extratos, e o
+// caminho enquanto "contas" não tem linhas. account_id não aparece na grade:
+// o registro novo nasce com a conta selecionada (OnNewRecord).
+procedure TFormMoney.AplicarFiltroSaldos;
+var
+  sql, condicao: string;
+  idConta: Integer;
+begin
+  if not DatabaseAberto then
+    Exit;
+
+  condicao := '';
+  if (cbAccount.ItemIndex >= 0) and (cbAccount.ItemIndex < cbAccount.Items.Count) then
+  begin
+    idConta := Integer(PtrInt(cbAccount.Items.Objects[cbAccount.ItemIndex]));
+    condicao := ' WHERE account_id = ' + IntToStr(idConta);
+  end;
+
+  sql := 'SELECT * FROM saldos' + condicao + ';';
+
+  // Mesmo caminho do filtro de extratos: só dá para trocar o SQL com a query
+  // fechada, então fecha, reescreve e reabre.
+  SQLQuerySaldos.Close;
+  SQLQuerySaldos.SQL.Text := sql;
+  SQLQuerySaldos.Open;
+end;
+
 // dtposted é texto: o importador grava AAAAMMDD (o formato ISO AAAA-MM-DD
 // do arquivo passa direto). A grade mostra DD/MM/AAAA nos dois casos; com
 // DisplayText=False volta o valor cru, que é o que o editor da grade usa
@@ -645,6 +686,21 @@ procedure TFormMoney.SQLQueryContasAfterOpen(DataSet: TDataSet);
 begin
   SQLQueryContas.FieldByName('bankid').OnGetText := @BancoIdGetText;
   SQLQueryContas.FieldByName('bankid').OnSetText := @BancoIdSetText;
+end;
+
+// Registro novo da tbSaldos nasce com a conta escolhida no cbAccount: a
+// coluna account_id não aparece na grade (é ela que filtra), então quem
+// preenche é aqui. Sem conta selecionada (combo vazia) o valor fica vazio e
+// a gravação recusa - account_id é NOT NULL, e não há conta para sugerir.
+procedure TFormMoney.SQLQuerySaldosNewRecord(DataSet: TDataSet);
+var
+  idConta: Integer;
+begin
+  if (cbAccount.ItemIndex >= 0) and (cbAccount.ItemIndex < cbAccount.Items.Count) then
+  begin
+    idConta := Integer(PtrInt(cbAccount.Items.Objects[cbAccount.ItemIndex]));
+    DataSet.FieldByName('account_id').AsInteger := idConta;
+  end;
 end;
 
 // Preenche o combo da coluna "Banco" com os nomes atuais de tbBancos. O
@@ -932,11 +988,10 @@ begin
     try
       if not SQLQueryContas.Active then
         SQLQueryContas.Open;
-      if not SQLQuerySaldos.Active then
-        SQLQuerySaldos.Open;
       // Recarrega as combos (o arquivo pode trazer anos que ainda nao
-      // apareciam), devolve a conta e o ano escolhidos e reabre a query da
-      // grade ja' filtrada - e' a grade que mostra o que acabou de entrar.
+      // apareciam), devolve a conta e o ano escolhidos e reabre as queries
+      // das duas grades ja' filtradas (extratos e saldos) - e' a grade de
+      // extratos que mostra o que acabou de entrar.
       CarregarFiltrosExtratos;
       indice := cbAccount.Items.IndexOf(contaTexto);
       if indice >= 0 then
@@ -945,6 +1000,7 @@ begin
       if indice >= 0 then
         cbYear.ItemIndex := indice;
       AplicarFiltroExtratos;
+      AplicarFiltroSaldos;
     except
       on E: Exception do
         if erro = '' then
@@ -1029,11 +1085,12 @@ begin
     SQLite3ConnContas.Close;
     SQLite3ConnContas.DatabaseName := novoArquivo;
     SQLQueryContas.Open;
-    SQLQuerySaldos.Open;
     // O filtro precisa das combos preenchidas (conta de "contas", ano de
-    // "extratos") antes da query da grade abrir com a seleção aplicada.
+    // "extratos") antes das queries das grades abrirem com a seleção
+    // aplicada - e' a mesma selecao que abre a de saldos, ja' filtrada.
     CarregarFiltrosExtratos;
     AplicarFiltroExtratos;
+    AplicarFiltroSaldos;
   except
     on E: Exception do
       MessageDlg('O database "' + ExtractFileName(novoArquivo) +
@@ -1092,11 +1149,12 @@ begin
     SQLite3ConnContas.Close;
     SQLite3ConnContas.DatabaseName := abrirArquivo;
     SQLQueryContas.Open;
-    SQLQuerySaldos.Open;
     // O filtro precisa das combos preenchidas (conta de "contas", ano de
-    // "extratos") antes da query da grade abrir com a seleção aplicada.
+    // "extratos") antes das queries das grades abrirem com a seleção
+    // aplicada - e' a mesma selecao que abre a de saldos, ja' filtrada.
     CarregarFiltrosExtratos;
     AplicarFiltroExtratos;
+    AplicarFiltroSaldos;
   except
     on E: Exception do
       MessageDlg('Não foi possível abrir o database "' +

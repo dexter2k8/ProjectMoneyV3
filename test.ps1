@@ -97,8 +97,8 @@ public class UiTest {
         IntPtr r; SendMessageTimeout(h, m, w, l, 2, 3000, out r); return r;
     }
     // TDBGrid tem barra de rolagem VERTICAL NATIVA (e' por ela que a suite
-    // le o nMax = total de linhas - ver VScrollMax); nenhuma outra janela
-    // larga do form a tem. Como a altura da grade muda conforme o rodape
+    // le as linhas da tabela ligada a grade - ver VScrollMax/VScrollRows);
+    // nenhuma outra janela larga do form a tem. Como a altura da grade muda conforme o rodape
     // (448 na tela de extratos, 498 numa aba de gestao), isto identifica
     // gridTrans sem depender do tamanho exato. (hsb nao foi incluido: na
     // pratica so' a vertical aparece no estilo, com AutoFillColumns.)
@@ -216,9 +216,11 @@ public class UiTest {
         return -1;
     }
     // nMax da barra de rolagem vertical (-1 = janela sem barra). No TDBGrid o
-    // LCL usa a barra NATIVA do Windows, entao o nMax e' o total de linhas
-    // que a grade mostra - e' assim que a suite enxerga a tabela ligada a
-    // grade (sem depender do desenho das celulas, que nao viram janela).
+    // LCL usa a barra NATIVA do Windows: o nMax e' o intervalo CRUDO que o
+    // LCL poe na barra (linhas + visiveis - 1, com nPage = visiveis - ver
+    // TCustomDBGrid.GetScrollbarParams). Serve para achar a grade ligada a
+    // tabela (>0 quando a barra existe, sem depender do desenho das
+    // celulas, que nao viram janela); para CONTAR linhas vale VScrollRows.
     public static int VScrollMax(IntPtr h) {
         SCROLLINFO s;
         s.cbSize = Marshal.SizeOf(typeof(SCROLLINFO));
@@ -226,6 +228,24 @@ public class UiTest {
         s.nMin = 0; s.nMax = 0; s.nPage = 0; s.nPos = 0; s.nTrackPos = 0;
         if (!GetScrollInfo(h, 1, ref s)) return -1;   // SB_VERT
         return s.nMax;
+    }
+    // Linhas REAIS da tabela ligada a grade: linhas = nMax - nPage + 2.
+    // O +2 e' CALIBRADO, nao deduzido: o LCL poe nMax = GetRecordCount +
+    // VisibleRowCount - 1 e nPage = VisibleRowCount, e o Windows devolve os
+    // dois sem ajuste (medido na pratica com 3 contagens conhecidas de
+    // saldos: 10 -> nMax=18/nPage=10, 30 -> 49/21, 150 -> 169/21; todas
+    // casam com nMax - nPage + 2). O GetRecordCount do TSQLQuery (FPC) vem
+    // com uma linha a menos que o total real da query e e' por isso que a
+    // soma nao e' nMax - nPage + 1. Sem barra montada nao da para dividir
+    // (nPage = 0) - devolve -1, o mesmo sinal de "sem barra".
+    public static int VScrollRows(IntPtr h) {
+        SCROLLINFO s;
+        s.cbSize = Marshal.SizeOf(typeof(SCROLLINFO));
+        s.fMask = 0x0017;             // SIF_RANGE|SIF_PAGE|SIF_POS|SIF_TRACKPOS
+        s.nMin = 0; s.nMax = 0; s.nPage = 0; s.nPos = 0; s.nTrackPos = 0;
+        if (!GetScrollInfo(h, 1, ref s)) return -1;   // SB_VERT
+        if (s.nPage == 0) return -1;
+        return (int)(s.nMax - s.nPage + 2);
     }
     // Janelas filhas visiveis, no formato "classe | id | texto | x,y WxH".
     // Comparar antes/depois prova que a aba abriu (novas janelas) e que o
@@ -374,6 +394,59 @@ function Get-LfmBlock([string]$Texto, [string]$Objeto) {
     $m = [regex]::Match($Texto, $padrao)
     if (-not $m.Success) { return '' }
     return $m.Value
+}
+
+# Le as colunas declaradas num bloco de grade: cada "item" do "Columns" vira
+# um par (FieldName, Title.Caption). A ordem das propriedades DENTRO do item
+# nao entra na conta - o Lazarus IDE reescreve o .lfm em ordem canonica ao
+# salvar o form (e ja' reescreveu uma vez); o que importa e' o par por item
+# e a ordem dos itens, que e' a ordem das colunas na grade.
+function Get-LfmColumns([string]$Bloco) {
+    $colunas = @()
+    $item = $null
+    foreach ($linha in ($Bloco -split "`r?`n")) {
+        if ($linha -match '^[ \t]*item[ \t]*$') { $item = @(); continue }
+        if ($null -eq $item) { continue }
+        if ($linha -match '^[ \t]*end\b') {
+            $campo = ''
+            $titulo = ''
+            foreach ($prop in $item) {
+                if ($prop -match "^[ \t]*FieldName = '([^']*)'") {
+                    $campo = $Matches[1]
+                }
+                if ($prop -match "^[ \t]*Title\.Caption = '([^']*)'") {
+                    $titulo = $Matches[1]
+                }
+            }
+            $colunas += [pscustomobject]@{ Campo = $campo; Titulo = $titulo }
+            $item = $null
+            continue
+        }
+        $item += $linha
+    }
+    return ,$colunas
+}
+
+# Compara as colunas lidas do .lfm com o pedido: mesma quantidade, mesma
+# ordem e o par (campo, rotulo) de cada coluna. Devolve $null quando bate e
+# a explicacao da primeira diferenca quando nao bate.
+function Test-LfmLabels($Colunas, $Esperado) {
+    for ($i = 0; $i -lt $Esperado.Count; $i++) {
+        if ($i -ge $Colunas.Count) {
+            return 'falta a coluna ' + ($i + 1) + ' (campo ' + $Esperado[$i][0] + ')'
+        }
+        if (($Colunas[$i].Campo -ne $Esperado[$i][0]) -or
+            ($Colunas[$i].Titulo -ne $Esperado[$i][1])) {
+            return 'a coluna ' + ($i + 1) + " e '" + $Colunas[$i].Campo +
+                "' com o rotulo '" + $Colunas[$i].Titulo + "' (esperado '" +
+                $Esperado[$i][0] + "' com '" + $Esperado[$i][1] + "')"
+        }
+    }
+    if ($Colunas.Count -gt $Esperado.Count) {
+        return 'sobrou a coluna ' + ($Esperado.Count + 1) + " ('" +
+            $Colunas[$Esperado.Count].Campo + "')"
+    }
+    return $null
 }
 
 # Grava N linhas em "saldos" (a tabela da tbSaldos) direto no arquivo: e' o
@@ -755,33 +828,22 @@ try {
     }
     Check 'gridTrans mostra dtposted, memo, chknum e trnamt nessa ordem (.lfm)' (
         $ordemOk) $detColunas
-    # Rotulos das colunas: cada titulo vem do Title.Caption do item da propria
-    # coluna - e conferir a ordem campo->titulo no texto tambem prova que o
-    # rotulo e' do campo certo. O acento vai por [char]: o .ps1 nao tem BOM e
-    # o PowerShell o le como ANSI, o que deixaria a comparacao com o .lfm
-    # (UTF-8) fora de fase. A concatenacao do rotulo entra entre parenteses:
-    # dentro de @( ) o '+' sozinho vira outro item do array.
+    # Rotulos das colunas: o par (campo, rotulo) e' lido POR ITEM do
+    # Columns - e' o vinculo dentro do item que prova que o rotulo e' do
+    # campo certo. A ordem das propriedades DENTRO do item nao entra na
+    # conta (o Lazarus IDE reescreve o .lfm em ordem canonica ao salvar o
+    # form, o que ja' aconteceu uma vez). Os acentos vao por [char]: o .ps1
+    # nao tem BOM e o PowerShell o le como ANSI, o que deixaria a
+    # comparacao com o .lfm (UTF-8) fora de fase.
     $rotuloDescricao = 'Descri' + [char]0x00E7 + [char]0x00E3 + 'o'
-    $pedacosTitulo = @(
-        "FieldName = 'dtposted'", "Title.Caption = 'Data'",
-        "FieldName = 'memo'", ("Title.Caption = '" + $rotuloDescricao + "'"),
-        "FieldName = 'chknum'", "Title.Caption = 'Documento'",
-        "FieldName = 'trnamt'", "Title.Caption = 'Valor'")
-    $posTitulo = -1
-    $titulosOk = $false
+    $esperadoTrans = @(
+        @('dtposted', 'Data'), @('memo', $rotuloDescricao),
+        @('chknum', 'Documento'), @('trnamt', 'Valor'))
     $detTitulos = $detGrid
+    $titulosOk = $false
     if ($blocoGrid -ne '') {
-        $detTitulos = 'rotulo faltando ou fora de ordem no bloco gridTrans'
-        $titulosOk = $true
-        foreach ($pedaco in $pedacosTitulo) {
-            $posNovo = $blocoGrid.IndexOf($pedaco)
-            if ($posNovo -le $posTitulo) {
-                $titulosOk = $false
-                $detTitulos = 'rotulo esperado nao encontrado: ' + $pedaco
-                break
-            }
-            $posTitulo = $posNovo
-        }
+        $detTitulos = Test-LfmLabels (Get-LfmColumns $blocoGrid) $esperadoTrans
+        $titulosOk = ($detTitulos -eq $null)
     }
     Check 'gridTrans rotula as colunas (Data, Descricao, Documento, Valor) (.lfm)' (
         $titulosOk) $detTitulos
@@ -844,35 +906,21 @@ try {
     }
     Check 'gridContas esconde o id e mostra acctid, accttype, bankid, branchid e description (.lfm)' (
         $ordemContas) $detContas
-    # Rotulos do gridContas: a ordem campo->rotulo no texto prova que o
-    # rotulo e' do campo certo (mesma regra dos rotulos do gridTrans). O
-    # acento vai por [char]: o .ps1 nao tem BOM e o PowerShell o le como
-    # ANSI, o que deixaria a comparacao com o .lfm (UTF-8) fora de fase.
-    # E a concatenacao entra entre parenteses: dentro de @( ) o '+' sozinho
-    # vira outro item do array.
-    $pedacosContas = @(
-        "FieldName = 'acctid'", "Title.Caption = 'Conta'",
-        "FieldName = 'accttype'", "Title.Caption = 'Tipo'",
-        "FieldName = 'bankid'", "Title.Caption = 'Banco'",
-        "FieldName = 'branchid'",
-        ("Title.Caption = 'Ag" + [char]0x00EA + "ncia'"),
-        "FieldName = 'description'",
-        ("Title.Caption = 'Descri" + [char]0x00E7 + [char]0x00E3 + "o'"))
-    $posRotulo = -1
-    $rotulosContas = $false
+    # Rotulos do gridContas: mesmo par (campo, rotulo) por item - o vinculo
+    # dentro do item prova que o rotulo e' do campo certo, e a ordem das
+    # propriedades dentro do item nao vale (o Lazarus IDE reescreve o .lfm
+    # em ordem canonica ao salvar o form). Os acentos vao por [char]: o .ps1
+    # nao tem BOM e o PowerShell o le como ANSI, o que deixaria a
+    # comparacao com o .lfm (UTF-8) fora de fase.
+    $esperadoContas = @(
+        @('acctid', 'Conta'), @('accttype', 'Tipo'), @('bankid', 'Banco'),
+        @('branchid', ('Ag' + [char]0x00EA + 'ncia')),
+        @('description', ('Descri' + [char]0x00E7 + [char]0x00E3 + 'o')))
     $detRotulos = $detContas
+    $rotulosContas = $false
     if ($blocoContas -ne '') {
-        $detRotulos = 'rotulo faltando ou fora de ordem no bloco gridContas'
-        $rotulosContas = $true
-        foreach ($pedaco in $pedacosContas) {
-            $posNovo = $blocoContas.IndexOf($pedaco)
-            if ($posNovo -le $posRotulo) {
-                $rotulosContas = $false
-                $detRotulos = 'rotulo esperado nao encontrado: ' + $pedaco
-                break
-            }
-            $posRotulo = $posNovo
-        }
+        $detRotulos = Test-LfmLabels (Get-LfmColumns $blocoContas) $esperadoContas
+        $rotulosContas = ($detRotulos -eq $null)
     }
     Check 'gridContas rotula as colunas (Conta, Tipo, Banco, Agencia, Descricao) (.lfm)' (
         $rotulosContas) $detRotulos
@@ -908,6 +956,10 @@ try {
     Check 'id dos bancos lido como texto, sem AsInteger (.pas)' (
         $pasTexto -notmatch "SQLQueryBanks\.FieldByName\('id'\)\.AsInteger") (
         'AsInteger em banks.id: o TEXT do SQLite vira memo e estoura')
+    # A coluna account_id SUMIU da grade: a tbSaldos mostra so' os registros
+    # da conta escolhida no cbAccount, entao a conta que filtra nao aparece
+    # (o registro novo recebe a conta pelo OnNewRecord da query). Seguem id
+    # escondido e as 2 colunas restantes com largura igual entre si.
     $blocoSaldos = Get-LfmBlock $lfmTexto 'gridSaldos: TDBGrid'
     $ordemSaldos = $false
     $detSaldos = 'bloco gridSaldos nao encontrado no .lfm'
@@ -915,10 +967,15 @@ try {
         $detSaldos = 'coluna faltando ou fora de ordem no bloco gridSaldos'
         $ordemSaldos = $true
         $posSaldos = -1
-        foreach ($campoSaldos in @('account_id', 'balance', 'enddate')) {
+        foreach ($campoSaldos in @('balance', 'enddate')) {
             $posNova = $blocoSaldos.IndexOf("FieldName = '" + $campoSaldos + "'")
             if ($posNova -le $posSaldos) { $ordemSaldos = $false; break }
             $posSaldos = $posNova
+        }
+        if ($ordemSaldos -and
+            $blocoSaldos.Contains("FieldName = 'account_id'")) {
+            $ordemSaldos = $false
+            $detSaldos = 'coluna de "account_id" declarada no bloco gridSaldos'
         }
         if ($ordemSaldos -and $blocoSaldos.Contains("FieldName = 'id'")) {
             $ordemSaldos = $false
@@ -930,8 +987,28 @@ try {
                 '(as colunas tem de ficar iguais)'
         }
     }
-    Check 'gridSaldos esconde o id e mostra account_id, balance e enddate (.lfm)' (
+    Check 'gridSaldos esconde id e account_id e mostra balance e enddate (.lfm)' (
         $ordemSaldos) $detSaldos
+    # Conta escolhida no cbAccount: filtra a query de saldos (mesmo caminho
+    # do filtro de extratos - Close, SQL.Text, Open) e preenche o registro
+    # novo (a coluna account_id sumiu da grade, entao so' o OnNewRecord
+    # escreve nela). A ligacao do OnNewRecord e' no .lfm (check acima do
+    # .pas cobre declaracao + implementacao do handler).
+    $blocoSQLSaldos = Get-LfmBlock $lfmTexto 'SQLQuerySaldos: TSQLQuery'
+    Check 'SQLQuerySaldos preenche a conta do combo no registro novo (.lfm)' (
+        $blocoSQLSaldos.Contains('OnNewRecord = SQLQuerySaldosNewRecord')) (
+        'OnNewRecord = SQLQuerySaldosNewRecord ausente na query de saldos')
+    Check 'saldos filtrados pela conta do cbAccount (.pas)' (
+        ($pasTexto -match 'procedure\s+TFormMoney\.AplicarFiltroSaldos') -and
+        ($pasTexto -match 'SELECT \* FROM saldos') -and
+        ($pasTexto -match 'WHERE account_id = ')) (
+        'AplicarFiltroSaldos e/ou o filtro por account_id ausentes')
+    Check 'OnNewRecord de saldos declarado e implementado (.pas)' (
+        ($pasTexto -match
+            'procedure\s+SQLQuerySaldosNewRecord\s*\(DataSet: TDataSet\)') -and
+        ($pasTexto -match
+            'procedure\s+TFormMoney\.SQLQuerySaldosNewRecord')) (
+        'handler SQLQuerySaldosNewRecord ausente')
 
     # ------------------------------------------------ [2] cria o banco
     Write-Banner '[2/11] Sem banks.db -> deve criar o arquivo'
@@ -1917,6 +1994,14 @@ try {
             [Sq]::Executar($db,
                 "INSERT INTO banks (id, name, alias)" +
                 " VALUES ('001', 'Banco do Brasil', 'BB');") -eq 1)
+        # Um saldo de OUTRA conta, gravado com o arquivo livre: a tbSaldos
+        # so' pode mostrar as 150 linhas da conta selecionada no combo (a
+        # 151a, de outra conta, tem de ficar de fora) - e' a prova do
+        # filtro da grade de saldos.
+        Check 'saldo de outra conta gravado (passo [10])' (
+            [Sq]::Executar($minewDb,
+                'INSERT INTO saldos (account_id, balance, enddate)' +
+                " VALUES (2, 999.9, '2026-12-31');") -eq 1)
         $pCb = Start-Process -FilePath $exe -WorkingDirectory $root -PassThru
         Start-Sleep -Seconds 3
         $pCb.Refresh()
@@ -1943,6 +2028,46 @@ try {
         $visCb = @(Wait-Interface $mainCb $true)
         Check 'interface revelada no passo [10]' ($visCb.Count -gt 0) (
             'janelas=' + $visCb.Count)
+
+        # ---- tbSaldos: o cbAccount continua visivel la e filtra a grade.
+        $idSal10 = [UiTest]::MenuId($mainCb, 'Gerenciar Saldos')
+        Check 'item de menu "Gerenciar Saldos" encontrado (passo [10])' (
+            $idSal10 -gt 0) ('id=' + $idSal10)
+        if ($idSal10 -gt 0) {
+            [void][UiTest]::Msg($mainCb, 0x0111, [IntPtr]$idSal10,
+                [IntPtr]::Zero)
+            # Visivel = achado entre as janelas visiveis da tela (o mesmo
+            # Find-ComboHwnd da tela de extratos, pela largura 212).
+            $cbSal10 = [IntPtr]::Zero
+            for ($t = 0; ($t -lt 20) -and ($cbSal10 -eq [IntPtr]::Zero); $t++) {
+                Start-Sleep -Milliseconds 250
+                $cbSal10 = Find-ComboHwnd $mainCb 212
+            }
+            Check 'cbAccount visivel na tela de Gerenciar Saldos (passo [10])' (
+                $cbSal10 -ne [IntPtr]::Zero) ('combo=' + $cbSal10)
+            # A grade de gestao tem 852 de largura (a de extratos, 860): a
+            # barra nativa devolve nMax = GetRecordCount + visiveis - 1 e
+            # nPage = visiveis, e o GetRecordCount do TSQLQuery vem com uma
+            # linha a menos - logo linhas reais = nMax - nPage + 2
+            # (VScrollRows, calibrado com contagens conhecidas). Tem de dar
+            # 150 (saldos da conta do combo), nunca as 151 do arquivo.
+            $gradeSal = [IntPtr]::Zero
+            for ($t = 0; ($t -lt 20) -and ($gradeSal -eq [IntPtr]::Zero); $t++) {
+                Start-Sleep -Milliseconds 250
+                foreach ($wSal in @([UiTest]::Visible($mainCb))) {
+                    if (($wSal -match ' 852x\d+$') -and
+                        ($wSal -match '\| id=(\d+)') -and
+                        ([UiTest]::HasVScrollBar([IntPtr][int64]$Matches[1]))) {
+                        $gradeSal = [IntPtr][int64]$Matches[1]
+                        break
+                    }
+                }
+            }
+            $linhasSal = [UiTest]::VScrollRows($gradeSal)
+            Check 'tbSaldos mostra so as linhas da conta do combo (150 de 151)' (
+                $linhasSal -eq 150) ('linhas=' + $linhasSal +
+                ' grade=' + $gradeSal)
+        }
 
         # Estado inicial: so' a conta do passo [9].
         $cbAntes = Find-ComboHwnd $mainCb 212
@@ -2073,6 +2198,12 @@ try {
     # a aplicacao encerrada).
     Check 'banco de teste removido de banks.db (passo [10])' (
         [Sq]::Executar($db, "DELETE FROM banks WHERE id = '001';") -eq 1)
+
+    # O saldo de outra conta so' existiu para provar o filtro da tbSaldos
+    # (arquivo livre agora, com a aplicacao encerrada).
+    Check 'saldo de outra conta removido (passo [10])' (
+        [Sq]::Executar($minewDb,
+            'DELETE FROM saldos WHERE account_id = 2;') -eq 1)
 
     # Conferencia no arquivo: so' funciona com a conexao encerrada (app
     # morta) e prova que o delete de verdade foi aplicado - nao so' some da

@@ -266,11 +266,6 @@ object FormMoney: TFormMoney
         Color = clWindow
         Columns = <        
           item
-            Title.Caption = 'account_id'
-            Width = 273
-            FieldName = 'account_id'
-          end        
-          item
             Title.Caption = 'balance'
             Width = 273
             FieldName = 'balance'
@@ -657,6 +652,7 @@ object FormMoney: TFormMoney
     Top = 400
   end
   object SQLQuerySaldos: TSQLQuery
+    OnNewRecord = SQLQuerySaldosNewRecord
     PacketRecords = -1
     FieldDefs = <>
     Database = SQLite3ConnContas
