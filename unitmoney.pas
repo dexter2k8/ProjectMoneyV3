@@ -6,7 +6,7 @@ interface
 
 uses
   Classes, SysUtils, SQLite3Conn, SQLDB, Forms, Controls, Graphics, Dialogs,
-  ComCtrls, ExtCtrls, StdCtrls, Menus, DB, DBGrids, DBCtrls, Buttons;
+  ComCtrls, ExtCtrls, StdCtrls, Menus, DB, Grids, DBGrids, DBCtrls, Buttons;
 
 type
 
@@ -98,7 +98,20 @@ type
     txtSaldo: TLabel;
     procedure cbAccountChange(Sender: TObject);
     procedure cbYearChange(Sender: TObject);
+    // Formatação da grade de extratos: os campos TEXT do SQLite viram ftMemo,
+    // então a exibição passa pelo DisplayText, que é onde o OnGetText entra.
+    // (Sem isso a data aparece como 20250305 e o valor sem C/D.)
+    procedure ExtratoDtpostedGetText(Sender: TField; var AText: string;
+      DisplayText: Boolean);
+    procedure ExtratoTextoGetText(Sender: TField; var AText: string;
+      DisplayText: Boolean);
+    procedure ExtratoTrnAmtGetText(Sender: TField; var AText: string;
+      DisplayText: Boolean);
     procedure FormCreate(Sender: TObject);
+    // Cor do valor na grade de extratos (crédito azul, débito vermelho): roda
+    // antes do desenho padrão da célula, que é quem pinta o texto.
+    procedure gridTransPrepareCanvas(Sender: TObject; DataCol: Integer;
+      Column: TColumn; AState: TGridDrawState);
     procedure miCloseClick(Sender: TObject);
     procedure miGerConClick(Sender: TObject);
     procedure miGerSalClick(Sender: TObject);
@@ -134,6 +147,11 @@ type
     // quando o usuário troca de seleção e são esvaziadas ao fechar.
     procedure CarregarFiltrosExtratos;
     procedure AplicarFiltroExtratos;
+    // Liga os handlers de exibição da grade de extratos (data, texto memo e
+    // valor). Os campos da query são dinâmicos: cada Open os recria sem os
+    // handlers, então a ligação é refeita logo depois de abrir — e abrir é
+    // sempre por aqui (AplicarFiltroExtratos é o único ponto de Open).
+    procedure PrepararCamposExtratos;
     procedure LimparFiltrosExtratos;
     // Remonta o combo de contas direto do database, mantendo a conta que o
     // usuário tinha escolhido (pelo id, para sobreviver à edição do texto).
@@ -496,6 +514,95 @@ begin
   SQLQueryExtratos.Close;
   SQLQueryExtratos.SQL.Text := sql;
   SQLQueryExtratos.Open;
+  PrepararCamposExtratos;
+end;
+
+// dtposted é texto: o importador grava AAAAMMDD (o formato ISO AAAA-MM-DD
+// do arquivo passa direto). A grade mostra DD/MM/AAAA nos dois casos; com
+// DisplayText=False volta o valor cru, que é o que o editor da grade usa
+// para editar sem transformar a data em lixo.
+procedure TFormMoney.ExtratoDtpostedGetText(Sender: TField; var AText: string;
+  DisplayText: Boolean);
+var
+  data: string;
+begin
+  data := Sender.AsString;
+  if DisplayText then
+  begin
+    if (Length(data) = 8) and (StrToIntDef(data, -1) >= 0) then
+      data := Copy(data, 7, 2) + '/' + Copy(data, 5, 2) + '/' + Copy(data, 1, 4)
+    else if (Length(data) = 10) and (data[5] = '-') and (data[8] = '-') then
+      data := Copy(data, 9, 2) + '/' + Copy(data, 6, 2) + '/' + Copy(data, 1, 4);
+  end;
+  AText := data;
+end;
+
+// memo e chknum são TEXT, que o SQLite entrega como ftMemo: a grade sem
+// dgDisplayMemoText desenha via DisplayText, e aí o TDBGrid cairia no
+// "(MEMO)" do campo memo — este handler devolve o texto de verdade (o mesmo
+// que AsString, que é o que as outras grades mostram com a opção ligada).
+procedure TFormMoney.ExtratoTextoGetText(Sender: TField; var AText: string;
+  DisplayText: Boolean);
+begin
+  if Sender.IsNull then
+    AText := ''
+  else
+    AText := Sender.AsString;
+end;
+
+// trnamt vira "20,00 C" (crédito) ou "20,00 D" (débito): a letra assume o
+// papel do sinal e o valor é o absoluto, com 2 casas e vírgula. O editor da
+// grade lê o valor cru (DisplayText=False), então o gravado não muda.
+procedure TFormMoney.ExtratoTrnAmtGetText(Sender: TField; var AText: string;
+  DisplayText: Boolean);
+var
+  formatos: TFormatSettings;
+  valor: Double;
+begin
+  if not DisplayText then
+  begin
+    AText := Sender.AsString;
+    Exit;
+  end;
+  if Sender.IsNull then
+  begin
+    AText := '';
+    Exit;
+  end;
+  valor := Sender.AsFloat;
+  formatos := DefaultFormatSettings;
+  formatos.DecimalSeparator := ',';
+  if valor >= 0 then
+    AText := FormatFloat('0.00', valor, formatos) + ' C'
+  else
+    AText := FormatFloat('0.00', -valor, formatos) + ' D';
+end;
+
+// Cor do valor conforme o sinal: crédito azul, débito vermelho. Célula
+// selecionada fica com as cores padrão da seleção — vermelho/azul sobre o
+// fundo de destaque não dão para ler.
+procedure TFormMoney.gridTransPrepareCanvas(Sender: TObject; DataCol: Integer;
+  Column: TColumn; AState: TGridDrawState);
+begin
+  if (Column = nil) or (Column.FieldName <> 'trnamt') then
+    Exit;
+  if gdSelected in AState then
+    Exit;
+  if (Column.Field = nil) or Column.Field.IsNull then
+    Exit;
+  if Column.Field.AsFloat >= 0 then
+    gridTrans.Canvas.Font.Color := clBlue
+  else
+    gridTrans.Canvas.Font.Color := clRed;
+end;
+
+procedure TFormMoney.PrepararCamposExtratos;
+begin
+  SQLQueryExtratos.FieldByName('dtposted').OnGetText :=
+    @ExtratoDtpostedGetText;
+  SQLQueryExtratos.FieldByName('memo').OnGetText := @ExtratoTextoGetText;
+  SQLQueryExtratos.FieldByName('chknum').OnGetText := @ExtratoTextoGetText;
+  SQLQueryExtratos.FieldByName('trnamt').OnGetText := @ExtratoTrnAmtGetText;
 end;
 
 procedure TFormMoney.LimparFiltrosExtratos;

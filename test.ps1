@@ -469,9 +469,14 @@ function Set-FileDialogName([IntPtr]$Dlg, [string]$Path) {
     $edit
 }
 
-# Espera o dialogo informado ser destruido (20 x 250ms = 5s).
+# Espera o dialogo informado ser destruido (120 x 250ms = 30s).
+# O fechamento apos o IDOK passa pela validacao do arquivo alvo no proprio
+# dialogo, e software externo (antivirus/shell) ja atrasou isso em ~17s aqui
+# (o passo [6] mata a aplicacao com o banco aberto, logo o [7] reabre um
+# arquivo recem-modificado). 5s dava FALHA falsa; um dialogo preso de
+# verdade continua falhando, so' mais tarde.
 function Wait-DialogClosed([IntPtr]$Dlg) {
-    for ($t = 0; $t -lt 20; $t++) {
+    for ($t = 0; $t -lt 120; $t++) {
         if (-not [UiTest]::IsWindow($Dlg)) { return $true }
         Start-Sleep -Milliseconds 250
     }
@@ -716,9 +721,9 @@ try {
         $blocoNav.Contains('DataSource = DataSourceExtratos')) $detNav
     # Sem dgDisplayMemoText o TDBGrid desenha o literal "(MEMO)" no lugar do
     # conteudo (os campos TEXT do SQLite viram ftMemo) - e o desenho nao da
-    # para ler pela janela, entao a prova tambem fica no .lfm. Vale para as
-    # 4 grades: a de extratos era a unica sem a opcao.
-    foreach ($nomeGrade in @('gridTrans', 'gridBancos', 'gridSaldos', 'gridContas')) {
+    # para ler pela janela, entao a prova fica no .lfm. Vale para as 3
+    # grades de gestao; a de extratos e' a excecao de proposito, abaixo.
+    foreach ($nomeGrade in @('gridBancos', 'gridSaldos', 'gridContas')) {
         $blocoGrade = Get-LfmBlock $lfmTexto ($nomeGrade + ': TDBGrid')
         $detGrade = 'bloco ' + $nomeGrade + ' nao encontrado no .lfm'
         if ($blocoGrade -ne '') {
@@ -727,6 +732,85 @@ try {
         Check ($nomeGrade + ' exibe o texto dos campos memo (.lfm)') (
             $blocoGrade.Contains('dgDisplayMemoText')) $detGrade
     }
+    # A grade de extratos formata data e valor pelos handlers de OnGetText do
+    # .pas - e com dgDisplayMemoText ligado o TDBGrid le o campo memo direto e
+    # ignora o handler (por isso a opcao saiu daqui). As colunas ficaram
+    # declaradas na ordem pedida: id, account_id e trntype nao tem coluna.
+    $detMemo = 'dgDisplayMemoText no bloco gridTrans quebra a formatacao'
+    if ($blocoGrid -eq '') { $detMemo = $detGrid }
+    $memoOk = ($blocoGrid -ne '') -and (-not $blocoGrid.Contains('dgDisplayMemoText'))
+    Check 'gridTrans sem dgDisplayMemoText (formatacao por OnGetText) (.lfm)' (
+        $memoOk) $detMemo
+    $ordemOk = $false
+    $detColunas = $detGrid
+    if ($blocoGrid -ne '') {
+        $detColunas = 'coluna faltando ou fora de ordem no bloco gridTrans'
+        $ordemOk = $true
+        $posColuna = -1
+        foreach ($nomeColuna in @('dtposted', 'memo', 'chknum', 'trnamt')) {
+            $posNova = $blocoGrid.IndexOf("FieldName = '" + $nomeColuna + "'")
+            if ($posNova -le $posColuna) { $ordemOk = $false; break }
+            $posColuna = $posNova
+        }
+    }
+    Check 'gridTrans mostra dtposted, memo, chknum e trnamt nessa ordem (.lfm)' (
+        $ordemOk) $detColunas
+    # Rotulos das colunas: cada titulo vem do Title.Caption do item da propria
+    # coluna - e conferir a ordem campo->titulo no texto tambem prova que o
+    # rotulo e' do campo certo. O acento vai por [char]: o .ps1 nao tem BOM e
+    # o PowerShell o le como ANSI, o que deixaria a comparacao com o .lfm
+    # (UTF-8) fora de fase. A concatenacao do rotulo entra entre parenteses:
+    # dentro de @( ) o '+' sozinho vira outro item do array.
+    $rotuloDescricao = 'Descri' + [char]0x00E7 + [char]0x00E3 + 'o'
+    $pedacosTitulo = @(
+        "FieldName = 'dtposted'", "Title.Caption = 'Data'",
+        "FieldName = 'memo'", ("Title.Caption = '" + $rotuloDescricao + "'"),
+        "FieldName = 'chknum'", "Title.Caption = 'Documento'",
+        "FieldName = 'trnamt'", "Title.Caption = 'Valor'")
+    $posTitulo = -1
+    $titulosOk = $false
+    $detTitulos = $detGrid
+    if ($blocoGrid -ne '') {
+        $detTitulos = 'rotulo faltando ou fora de ordem no bloco gridTrans'
+        $titulosOk = $true
+        foreach ($pedaco in $pedacosTitulo) {
+            $posNovo = $blocoGrid.IndexOf($pedaco)
+            if ($posNovo -le $posTitulo) {
+                $titulosOk = $false
+                $detTitulos = 'rotulo esperado nao encontrado: ' + $pedaco
+                break
+            }
+            $posTitulo = $posNovo
+        }
+    }
+    Check 'gridTrans rotula as colunas (Data, Descricao, Documento, Valor) (.lfm)' (
+        $titulosOk) $detTitulos
+    $detCanvas = 'OnPrepareCanvas ausente no bloco gridTrans'
+    if ($blocoGrid -eq '') { $detCanvas = $detGrid }
+    $canvasOk = $blocoGrid.Contains('OnPrepareCanvas = gridTransPrepareCanvas')
+    Check 'gridTrans pinta o valor por OnPrepareCanvas (.lfm)' ($canvasOk) $detCanvas
+    # O texto memo da grade de extratos vem dos handlers do .pas (sem
+    # dgDisplayMemoText nao ha quem escape do "(MEMO)"), e a ligacao dos
+    # quatro so' existe em codigo - entao a prova e' la.
+    $pasTexto = ''
+    $pasPath = Join-Path $root 'unitmoney.pas'
+    if (Test-Path $pasPath) { $pasTexto = [IO.File]::ReadAllText($pasPath) }
+    Check 'unitmoney.pas lido' ($pasTexto -ne '') $pasPath
+    $faltaHandler = ''
+    foreach ($ligacao in @(
+        'dtposted=ExtratoDtpostedGetText',
+        'memo=ExtratoTextoGetText',
+        'chknum=ExtratoTextoGetText',
+        'trnamt=ExtratoTrnAmtGetText')) {
+        $campo, $handler = $ligacao -split '='
+        $padrao = "FieldByName\('" + $campo + "'\)\.OnGetText\s*:=\s*@" + $handler
+        if ($pasTexto -notmatch $padrao) {
+            $faltaHandler = 'OnGetText de ' + $campo + ' nao ligado a ' + $handler
+            break
+        }
+    }
+    Check 'handlers de formatacao da grade ligados (.pas)' (
+        $faltaHandler -eq '') $faltaHandler
     Check 'combos de filtro com OnChange (.lfm)' (
         ($lfmTexto -match 'OnChange = cbAccountChange') -and
         ($lfmTexto -match 'OnChange = cbYearChange')) (

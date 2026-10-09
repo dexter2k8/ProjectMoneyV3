@@ -413,9 +413,34 @@ object FormMoney: TFormMoney
     AutoFillColumns = True
     BorderSpacing.Top = 24
     Color = clWindow
-    Columns = <>
+    Columns = <
+      item
+        FieldName = 'dtposted'
+        SizePriority = 0
+        Title.Caption = 'Data'
+        Width = 90
+      end
+      item
+        FieldName = 'memo'
+        Title.Caption = 'Descrição'
+      end
+      item
+        FieldName = 'chknum'
+        SizePriority = 0
+        Title.Caption = 'Documento'
+        Width = 80
+      end
+      item
+        Alignment = taRightJustify
+        FieldName = 'trnamt'
+        SizePriority = 0
+        Title.Alignment = taRightJustify
+        Title.Caption = 'Valor'
+        Width = 110
+      end>
     DataSource = DataSourceExtratos
-    Options = [dgEditing, dgTitles, dgIndicator, dgColumnResize, dgColumnMove, dgColLines, dgRowLines, dgTabs, dgAlwaysShowSelection, dgConfirmDelete, dgCancelOnExit, dgDisplayMemoText]
+    OnPrepareCanvas = gridTransPrepareCanvas
+    Options = [dgEditing, dgTitles, dgIndicator, dgColumnResize, dgColumnMove, dgColLines, dgRowLines, dgTabs, dgAlwaysShowSelection, dgConfirmDelete, dgCancelOnExit]
     TabOrder = 5
     Visible = False
   end
