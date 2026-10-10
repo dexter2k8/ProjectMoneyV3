@@ -218,15 +218,35 @@ type
     // A lista de anos vem de saldos.enddate (o filtro continua em dtposted).
     procedure CarregarFiltrosExtratos;
     procedure AplicarFiltroExtratos;
-    // Preenche o tsAnterior (campo do valor, ao lado do rótulo "Anterior:")
-    // com o balance do saldo IMEDIATAMENTE ANTERIOR ao mês ativo: o registro
-    // mais recente de saldos (enddate) anterior ao 1º dia desse mês, no ano
-    // do cbYear e na conta do cbAccount (mesma regra dos filtros) - zero
-    // quando não existe. Exibido como na coluna de valor da grade: "37,50 C"
-    // (crédito, cor do campo) ou "37,50 D" (débito, vermelho). Roda no fim do
-    // AplicarFiltroExtratos, que é o único ponto que muda com guia, ano,
-    // conta, abertura e importação.
+    // Mês (da guia ativa, 1..12) e ano (do cbYear) que definem o período
+    // que a tela de extratos está mostrando. Devolve False quando ainda não
+    // há o que mostrar (sem database, sem guia de mês ativa ou sem ano
+    // escolhido - é o estado do fechar, onde a tela já está escondida).
+    function PeriodoExtratos(out ano, mes: Integer): Boolean;
+    // Lê o balance do registro de saldos mais recente (maior enddate, com
+    // empate de data desempatado pelo maior id) que satisfaz CondicaoPeriodo,
+    // sempre na conta do cbAccount e com o mesmo CAST AS REAL da grade - 0
+    // quando não há registro. Consulta própria na mesma conexão dos filtros:
+    // não mexe no cursor de nenhuma grade.
+    function ConsultarSaldo(const CondicaoPeriodo: string): Double;
+    // Exibe um saldo no mesmo par C/D da coluna de valor da grade
+    // (ExtratoTrnAmtGetText): a letra assume o papel do sinal e o valor é o
+    // absoluto, com 2 casas e vírgula. A cor acompanha o sinal, MAS só o
+    // negativo é vermelho: o positivo fica na cor do próprio campo. Usado
+    // pelo tsAnterior e pelo txtSaldo (TStaticText e TLabel - os dois têm
+    // Caption e Font no TControl).
+    procedure ExibirSaldo(Campo: TControl; valor: Double);
+    // tsAnterior = abertura do mês ativo: balance do saldo IMEDIATAMENTE
+    // ANTERIOR ao 1º dia do mês da guia ativa (no ano do cbYear e na conta
+    // do cbAccount - mesma regra dos filtros); zero quando não existe. Roda
+    // no fim do AplicarFiltroExtratos, que é o único ponto que muda com
+    // guia, ano, conta, abertura e importação.
     procedure AtualizarSaldoAnterior;
+    // txtSaldo = fechamento do mês ativo ("Saldo:" no rodapé): balance do
+    // saldo MAIS RECENTE gravado no próprio mês da guia ativa (mesmo ano,
+    // conta e gatilho do AtualizarSaldoAnterior); zero quando não há saldo
+    // lançado no mês.
+    procedure AtualizarSaldoMes;
     // Guias de mês da tela de extratos (1 = tbJan ... 12 = tbDez): aparecem
     // só nos meses que têm saldo no ano do cbYear, com a aba ativa no mês
     // mais recente. Roda ao carregar os filtros, ao trocar o ano e no
@@ -929,97 +949,131 @@ begin
   SQLQueryExtratos.Open;
   PrepararCamposExtratos;
 
-  // O saldo "Anterior" é da MESMA tela (ano + mês + conta que acabaram de
-  // ser aplicados), então é calculado aqui: é o único ponto que roda em
-  // todas as mudanças de guia, de ano, de conta, na abertura e na importação.
+  // Os DOIS campos de saldo são da MESMA tela (ano + mês + conta que
+  // acabaram de ser aplicados), então são calculados aqui: é o único ponto
+  // que roda em todas as mudanças de guia, de ano, de conta, na abertura e
+  // na importação.
   AtualizarSaldoAnterior;
+  AtualizarSaldoMes;
+end;
+
+// O mês vem da guia ativa (é a guia que diz qual mês a grade filtra) e o
+// ano do cbYear (é ele que define a lista de anos e as guias). Sem
+// database/mês/ano válido não há o que consultar - é também o estado do
+// fechar, onde a tela inteira já está escondida.
+function TFormMoney.PeriodoExtratos(out ano, mes: Integer): Boolean;
+begin
+  mes := MesDaAba(PageControl1.ActivePage);
+  ano := -1;
+  if (cbYear.ItemIndex >= 0) and (cbYear.ItemIndex < cbYear.Items.Count) then
+    ano := StrToIntDef(Trim(cbYear.Items[cbYear.ItemIndex]), -1);
+  Result := DatabaseAberto and (mes > 0) and (ano >= 0);
+end;
+
+// O CondicaoPeriodo é só a parte da data (quem chama escolhe entre "antes do
+// mês" e "dentro do mês"); a CONTA entra sempre aqui, mesma regra dos
+// filtros (o combo carrega o id em Items.Objects e vazio não restringe) -
+// senão os campos misturariam contas. A consulta é própria, na mesma
+// conexão (mesmo caminho do ano do cbYear e das guias): não mexe no cursor
+// de nenhuma grade. Em empate de data (vários saldos no mesmo dia) o
+// desempate é pelo MAIOR id, que é AUTOINCREMENT = ordem de gravação - senão
+// o resultado dependeria da ordem em que o SQLite devolvesse as linhas. E o
+// CAST AS REAL não é cosmético: o driver SQLite tipa "NUMERIC" (sem
+// precisão) como TLargeintField, que LÊ por sqlite3_column_int64 - sem o CAST
+// um balance 37,5 chegava aqui como 37 (o CAST cai em TFloatField, lido por
+// sqlite3_column_double).
+function TFormMoney.ConsultarSaldo(const CondicaoPeriodo: string): Double;
+var
+  consulta: TSQLQuery;
+  condConta: string;
+begin
+  Result := 0;
+
+  condConta := '';
+  if (cbAccount.ItemIndex >= 0) and (cbAccount.ItemIndex < cbAccount.Items.Count)
+  then
+    condConta := ' AND account_id = ' + IntToStr(
+      Integer(PtrInt(cbAccount.Items.Objects[cbAccount.ItemIndex])));
+
+  consulta := TSQLQuery.Create(nil);
+  try
+    consulta.Database := SQLite3ConnContas;
+    consulta.Transaction := SQLTransactionContas;
+    consulta.SQL.Text := 'SELECT CAST(balance AS REAL) FROM saldos WHERE ' +
+      CondicaoPeriodo + condConta + ' ORDER BY enddate DESC, id DESC LIMIT 1;';
+    consulta.Open;
+    if not consulta.EOF then
+      Result := consulta.Fields[0].AsFloat;
+    consulta.Close;
+  finally
+    consulta.Free;
+  end;
+end;
+
+// Mesmo par C/D da coluna de valor da grade (ExtratoTrnAmtGetText): a letra
+// assume o papel do sinal e o valor é o absoluto, com 2 casas, vírgula e sem
+// separador de milhar - zero conta como crédito (>= 0), a mesma regra do
+// trnamt. A cor acompanha o sinal como na grade, MAS só o negativo é
+// vermelho: o positivo fica na cor do próprio campo (o pedido foi "na cor
+// atual", não o azul da grade). Os DOIS caminhos religam a cor de propósito
+// - sem isso, depois de um saldo negativo o vermelho ficaria grudado no
+// campo. Campo é TControl porque os dois exibidores são disso para baixo: o
+// tsAnterior (TStaticText) e o txtSaldo (TLabel).
+procedure TFormMoney.ExibirSaldo(Campo: TControl; valor: Double);
+var
+  formatos: TFormatSettings;
+begin
+  formatos := DefaultFormatSettings;
+  formatos.DecimalSeparator := ',';
+  if valor >= 0 then
+  begin
+    Campo.Font.Color := clDefault;
+    Campo.Caption := FormatFloat('0.00', valor, formatos) + ' C';
+  end
+  else
+  begin
+    Campo.Font.Color := clRed;
+    Campo.Caption := FormatFloat('0.00', -valor, formatos) + ' D';
+  end;
 end;
 
 // O tsAnterior mostra o balance do saldo imediatamente anterior ao mês ativo
 // - o saldo com que o mês começa. "Imediatamente anterior" = o registro mais
 // recente de saldos ANTERIOR ao primeiro dia do mês da guia ativa (no ano do
 // cbYear, que é o que define o ano desse limite). Não havendo nenhum, o
-// pedido é exibir zero (valor inicial deste procedimento) - que aparece como
-// crédito ("0,00 C"), a mesma regra do valor da grade.
+// pedido é exibir zero - que aparece como crédito ("0,00 C").
 procedure TFormMoney.AtualizarSaldoAnterior;
 var
-  consulta: TSQLQuery;
-  condicao: string;
-  idConta, ano, mes: Integer;
-  valor: Double;
-  formatos: TFormatSettings;
+  ano, mes: Integer;
 begin
-  valor := 0;
-
-  mes := MesDaAba(PageControl1.ActivePage);
-  ano := -1;
-  if (cbYear.ItemIndex >= 0) and (cbYear.ItemIndex < cbYear.Items.Count) then
-    ano := StrToIntDef(Trim(cbYear.Items[cbYear.ItemIndex]), -1);
-
-  // Sem database/mês/ano válido não há o que consultar (é também o estado do
-  // fechar, onde a tela inteira já está escondida) - e vale zero.
-  if DatabaseAberto and (mes > 0) and (ano >= 0) then
-  begin
-    // Conta: mesma regra dos filtros (o combo carrega o id em Items.Objects
-    // e vazio não restringe) - o saldo tem de ser da conta que a tela
-    // mostra, senão o "Anterior" misturaria contas.
-    condicao := '';
-    if (cbAccount.ItemIndex >= 0) and (cbAccount.ItemIndex < cbAccount.Items.Count)
-    then
-    begin
-      idConta := Integer(PtrInt(cbAccount.Items.Objects[cbAccount.ItemIndex]));
-      condicao := ' AND account_id = ' + IntToStr(idConta);
-    end;
-
-    // Consulta própria na mesma conexão (mesmo caminho do ano do cbYear e
-    // das guias): não mexe no cursor de nenhuma grade.
-    consulta := TSQLQuery.Create(nil);
-    try
-      consulta.Database := SQLite3ConnContas;
-      consulta.Transaction := SQLTransactionContas;
-      // enddate é texto ISO (AAAA-MM-DD - formato que o próprio form grava),
-      // então a comparação de texto ordena por data: o limite é o 1º dia do
-      // mês ATIVO e o que vale é o registro mais recente antes dele. Em
-      // empate de data (vários saldos no mesmo mês) o desempate é pelo MAIOR
-      // id, que é AUTOINCREMENT = ordem de gravação - senão o resultado
-      // dependeria da ordem em que o SQLite devolvesse as linhas.
-      // O CAST AS REAL não é cosmético: o driver SQLite tipa "NUMERIC" (sem
-      // precisão) como TLargeintField, que LÊ por sqlite3_column_int64 - sem
-      // o CAST um balance 37,5 chegava aqui como 37 (o CAST cai em
-      // TFloatField, lido por sqlite3_column_double).
-      consulta.SQL.Text :=
-        'SELECT CAST(balance AS REAL) FROM saldos WHERE enddate < ' +
-        QuotedStr(Format('%.4d-%.2d-01', [ano, mes])) + condicao +
-        ' ORDER BY enddate DESC, id DESC LIMIT 1;';
-      consulta.Open;
-      if not consulta.EOF then
-        valor := consulta.Fields[0].AsFloat;
-      consulta.Close;
-    finally
-      consulta.Free;
-    end;
-  end;
-
-  // Mesmo par C/D da coluna de valor da grade (ExtratoTrnAmtGetText): a
-  // letra assume o papel do sinal e o valor é o absoluto, com 2 casas,
-  // vírgula e sem separador de milhar - zero conta como crédito (>= 0),
-  // a mesma regra do trnamt. A cor acompanha o sinal como na grade, MAS
-  // só o negativo é vermelho: o positivo fica na cor do próprio campo (o
-  // pedido foi "na cor atual", não o azul da grade). Os DOIS caminhos
-  // religam a cor de propósito - sem isso, depois de um mês com saldo
-  // negativo o vermelho ficaria grudado no campo.
-  formatos := DefaultFormatSettings;
-  formatos.DecimalSeparator := ',';
-  if valor >= 0 then
-  begin
-    tsAnterior.Font.Color := clDefault;
-    tsAnterior.Caption := FormatFloat('0.00', valor, formatos) + ' C';
-  end
+  if PeriodoExtratos(ano, mes) then
+    // enddate é texto ISO (AAAA-MM-DD - formato que o próprio form grava),
+    // então a comparação de texto ordena por data: o limite é o 1º dia do
+    // mês ATIVO e o que vale é o registro mais recente antes dele.
+    ExibirSaldo(tsAnterior, ConsultarSaldo('enddate < ' +
+      QuotedStr(Format('%.4d-%.2d-01', [ano, mes]))))
   else
-  begin
-    tsAnterior.Font.Color := clRed;
-    tsAnterior.Caption := FormatFloat('0.00', -valor, formatos) + ' D';
-  end;
+    ExibirSaldo(tsAnterior, 0);
+end;
+
+// O txtSaldo (rótulo "Saldo:" no rodapé) mostra o balance do saldo DO mês
+// ativo - o saldo com que o mês fecha, o par do "Anterior" (que é a
+// abertura). "Do mês" = o registro mais recente gravado com enddate dentro
+// do mês da guia ativa (mesmo ano do cbYear); como as guias só existem para
+// meses com saldo, na prática sempre há registro - mas o zero cobre o caso
+// de a conta filtrada não ter saldo no mês.
+procedure TFormMoney.AtualizarSaldoMes;
+var
+  ano, mes: Integer;
+begin
+  if PeriodoExtratos(ano, mes) then
+    // substr(enddate, 1, 4) e substr(enddate, 6, 2) são ano e mês, o mesmo
+    // recorte que o AtualizarAbasMes usa para decidir quais guias aparecem.
+    ExibirSaldo(txtSaldo, ConsultarSaldo('substr(enddate, 1, 4) = ' +
+      QuotedStr(Format('%.4d', [ano])) + ' AND substr(enddate, 6, 2) = ' +
+      QuotedStr(Format('%.2d', [mes]))))
+  else
+    ExibirSaldo(txtSaldo, 0);
 end;
 
 // Grade de saldos da tbSaldos: só os registros da conta escolhida no

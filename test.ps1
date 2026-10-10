@@ -1412,24 +1412,49 @@ try {
     Check 'cbYear abre no ano mais recente de saldos (.pas)' (
         $pasTexto -match 'ORDER BY substr\(enddate, 1, 4\) DESC') (
         'lista de anos nao vai do mais recente para o mais antigo')
-    # O "Anterior:" exibe o MESMO par C/D da coluna de valor da grade: a
-    # letra assume o papel do sinal, o valor e' o absoluto, e so' o negativo
-    # vai para o vermelho (o positivo fica na cor do campo - clDefault). A
-    # cor nao da para ler da UI (e' o Font.Color do TStaticText, aplicado no
-    # WM_CTLCOLORSTATIC do controle nativo), entao o que se confere aqui e'
-    # o corpo do AtualizarSaldoAnterior.
+    # Os DOIS campos de saldo (tsAnterior = abertura, txtSaldo = fechamento
+    # do mes ativo) passam pelo MESMO ExibirSaldo: o MESMO par C/D da coluna
+    # de valor da grade - a letra assume o papel do sinal, o valor e' o
+    # absoluto, e so' o negativo vai para o vermelho (o positivo fica na cor
+    # do campo - clDefault). A cor nao da para ler da UI (e' Font.Color de um
+    # TStaticText/TLabel, aplicado no repaint), entao o que se confere aqui e'
+    # o corpo do ExibirSaldo.
+    $blocoExibirSaldo = ''
+    if ($pasTexto -match '(?s)procedure\s+TFormMoney\.ExibirSaldo.*?\nend;') {
+        $blocoExibirSaldo = $Matches[0]
+    }
+    Check 'campos de saldo mostram C/D com valor absoluto (.pas)' (
+        ($blocoExibirSaldo -match "FormatFloat\('0\.00', valor, formatos\) \+ ' C'") -and
+        ($blocoExibirSaldo -match "FormatFloat\('0\.00', -valor, formatos\) \+ ' D'")) (
+        'ExibirSaldo nao formata o saldo com o par C/D da grade')
+    Check 'campos de saldo pintam so o negativo de vermelho (.pas)' (
+        ($blocoExibirSaldo -match 'Campo\.Font\.Color := clRed') -and
+        ($blocoExibirSaldo -match 'Campo\.Font\.Color := clDefault')) (
+        'ExibirSaldo nao colore o saldo pelo sinal')
+    # Cada campo consulta o SEU periodo: o Anterior e' o registro ANTERIOR ao
+    # 1o dia do mes ativo; o txtSaldo e' o registro DENTRO do mes ativo (mesmo
+    # recorte substr de ano/mes que monta as guias). E os dois sao atualizados
+    # no MESMO gatilho (fim do AplicarFiltroExtratos).
     $blocoSalAnterior = ''
     if ($pasTexto -match '(?s)procedure\s+TFormMoney\.AtualizarSaldoAnterior.*?\nend;') {
         $blocoSalAnterior = $Matches[0]
     }
-    Check 'tsAnterior mostra C/D com valor absoluto (.pas)' (
-        ($blocoSalAnterior -match "FormatFloat\('0\.00', valor, formatos\) \+ ' C'") -and
-        ($blocoSalAnterior -match "FormatFloat\('0\.00', -valor, formatos\) \+ ' D'")) (
-        'AtualizarSaldoAnterior nao formata o saldo anterior com o par C/D da grade')
-    Check 'tsAnterior pinta so o negativo de vermelho (.pas)' (
-        ($blocoSalAnterior -match 'tsAnterior\.Font\.Color := clRed') -and
-        ($blocoSalAnterior -match 'tsAnterior\.Font\.Color := clDefault')) (
-        'AtualizarSaldoAnterior nao colore o saldo anterior pelo sinal')
+    Check 'tsAnterior consulta o saldo anterior ao mes ativo (.pas)' (
+        ($blocoSalAnterior -match "enddate < ") -and
+        ($blocoSalAnterior -match 'ExibirSaldo\(tsAnterior')) (
+        'AtualizarSaldoAnterior nao consulta o saldo anterior ao mes nem exibe no tsAnterior')
+    $blocoSalMes = ''
+    if ($pasTexto -match '(?s)procedure\s+TFormMoney\.AtualizarSaldoMes.*?\nend;') {
+        $blocoSalMes = $Matches[0]
+    }
+    Check 'txtSaldo consulta o saldo do mes ativo (.pas)' (
+        ($blocoSalMes -match "substr\(enddate, 1, 4\) = ") -and
+        ($blocoSalMes -match "substr\(enddate, 6, 2\) = ") -and
+        ($blocoSalMes -match 'ExibirSaldo\(txtSaldo')) (
+        'AtualizarSaldoMes nao consulta o saldo dentro do mes ativo nem exibe no txtSaldo')
+    Check 'os dois campos de saldo atualizam juntos no filtro (.pas)' (
+        $pasTexto -match 'AtualizarSaldoAnterior;\s+AtualizarSaldoMes;') (
+        'AplicarFiltroExtratos nao atualiza os dois campos de saldo')
 
     # ------------------------------------------------ [2] cria o banco
     Write-Banner '[2/11] Sem banks.db -> deve criar o arquivo'
