@@ -256,7 +256,7 @@ object FormMoney: TFormMoney
       ClientHeight = 444
       ClientWidth = 852
       TabVisible = False
-      object gridSaldos: TDBGrid
+      object gridSaldos: TMoneyGrid
         Left = 0
         Height = 394
         Top = 0
@@ -276,7 +276,7 @@ object FormMoney: TFormMoney
             FieldName = 'enddate'
           end>
         DataSource = DataSourceSaldos
-        Options = [dgEditing, dgTitles, dgIndicator, dgColumnResize, dgColumnMove, dgColLines, dgRowLines, dgTabs, dgAlwaysShowSelection, dgConfirmDelete, dgCancelOnExit, dgDisplayMemoText]
+        Options = [dgEditing, dgTitles, dgIndicator, dgColumnResize, dgColumnMove, dgColLines, dgRowLines, dgTabs, dgAlwaysShowSelection, dgConfirmDelete, dgCancelOnExit]
         TabOrder = 0
       end
       object pnSaldosControl: TPanel

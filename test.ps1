@@ -83,6 +83,7 @@ public class UiTest {
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
     [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
     [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
+    [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr h, uint cmd);
     [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr h, int i);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
     [DllImport("user32.dll")] static extern bool GetScrollInfo(IntPtr h, int bar, ref SCROLLINFO s);
@@ -119,6 +120,29 @@ public class UiTest {
             return true;
         }, IntPtr.Zero);
         return found;
+    }
+    // Texto de um dialogo do processo: a mensagem (excecao, aviso) fica no
+    // Edit/Static filho (memo da caixa de excecao do LCL, Static de aviso).
+    // Sem isto uma falha de "nenhum dialogo" so' devolve o hwnd e nao diz o
+    // que o programa reclamou na hora de gravar.
+    public static string DialogText(IntPtr dlg) {
+        if (dlg == IntPtr.Zero) return "";
+        var sb = new StringBuilder(512);
+        EnumChildWindows(dlg, (h, l) => {
+            var c = new StringBuilder(64); GetClassName(h, c, 64);
+            string cls = c.ToString();
+            if (cls == "Edit" || cls == "Static" || cls == "RichEdit20W" ||
+                cls == "RichEdit50W" || cls == "TMemo" ||
+                cls == "TEdit" || cls.StartsWith("Static")) {
+                string s = GetText(h);
+                if (s.Length > 0) {
+                    if (sb.Length > 0) sb.Append(" | ");
+                    sb.Append(s);
+                }
+            }
+            return true;
+        }, IntPtr.Zero);
+        return sb.ToString();
     }
     public static IntPtr FindChild(IntPtr parent, string cls) {
         return FindWindowEx(parent, IntPtr.Zero, cls, null);
@@ -263,6 +287,30 @@ public class UiTest {
             return true;
         }, IntPtr.Zero);
         return res.ToArray();
+    }
+    // Classe da primeira IRMA ACIMA de "h" na pilha de z-order do pai que
+    // sobrepoe o retangulo dela (string vazia = nada cobre a janela). Serve
+    // para provar que o gridTrans nao so' existe e tem dados, mas esta' por
+    // cima da PageControl1: sem o BringToFront, a revelacao da pagina
+    // deixava a SysTabControl32 acima da grade - o usuario via a tela de
+    // extratos "sem grade nenhuma", com a grade escondida atras das guias.
+    public static string AcimaSobreposta(IntPtr h) {
+        RECT r;
+        if (!GetWindowRect(h, out r)) return "";
+        IntPtr a = h;
+        for (int i = 0; (i < 32); i++) {
+            a = GetWindow(a, 3);      // GW_HWNDPREV (irma acima na pilha)
+            if (a == IntPtr.Zero) break;
+            RECT q;
+            if (!IsWindowVisible(a) || !GetWindowRect(a, out q)) continue;
+            if ((q.left < r.right) && (q.right > r.left) &&
+                (q.top < r.bottom) && (q.bottom > r.top)) {
+                var c = new StringBuilder(128);
+                GetClassName(a, c, 128);
+                return c.ToString();
+            }
+        }
+        return "";
     }
     // Clique de verdade: WM_LBUTTONDOWN/UP com coordenadas relativas ao
     // proprio HWND, SEM WindowFromPoint - assim a janela nao precisa estar
@@ -744,6 +792,72 @@ function Test-GridVisivel([IntPtr]$Main) {
     Test-GridVisivelEm @([UiTest]::Visible($Main))
 }
 
+# O HWND da grade de extratos (mesma pegada do Test-GridVisivel: 860 de
+# largura - a do form; as grades de gestao tem 852 - com a barra de rolagem
+# nativa do TDBGrid). Zero quando ela nao esta' na tela.
+function Find-GridTransHwnd([IntPtr]$Main) {
+    foreach ($w in @([UiTest]::Visible($Main))) {
+        if ($w -notmatch ' 860x\d+$') { continue }
+        if ($w -match '\| id=(\d+)') {
+            $h = [IntPtr][int64]$Matches[1]
+            if ([UiTest]::HasVScrollBar($h)) { return $h }
+        }
+    }
+    return [IntPtr]::Zero
+}
+
+# Os controles do FORM que sobrepoeem a area das guias na tela de extratos - a
+# grade de transacoes e os dois textos do saldo anterior (na faixa das guias) -
+# tem de estar ACIMA da PageControl1 na pilha de janelas. Cada mexida na
+# pagina (revelar a interface na abertura, mexer no TabVisible das guias de
+# mes) a coloca POR CIMA deles, e ai eles ficam com WS_VISIBLE, porem escondidos
+# atras das guias: a tela aparecia "sem grade nenhuma" e sem o "Anterior",
+# com tudo gravado por tras. Confere que nada que sobrepoe o retangulo de cada
+# um ficou acima (o GarantirSobreposicaoNaFrente do form e' o que garante).
+function Find-AnteriorValorHwnd([IntPtr]$Main) {
+    # tsAnterior e' o Static da MESMA fileira do rotulo "Anterior:", a direita
+    # dele: nao tem texto proprio (o valor ainda nao e' preenchido pelo
+    # programa), entao a pegada e' a posicao na tela.
+    $lbl = [IntPtr]::Zero
+    $x = -1
+    $y = -1
+    foreach ($w in @([UiTest]::Visible($Main))) {
+        if ($w -match '\| id=(\d+) \| "Anterior:" \| (\d+),(\d+) ') {
+            $lbl = [IntPtr][int64]$Matches[1]
+            $x = [int]$Matches[2]
+            $y = [int]$Matches[3]
+        }
+    }
+    if ($lbl -eq [IntPtr]::Zero) { return [IntPtr]::Zero }
+    foreach ($w in @([UiTest]::Visible($Main))) {
+        if (($w -match '^Static \| id=(\d+) \| "" \| (\d+),(\d+) ') -and
+            ([int]$Matches[3] -eq $y) -and ([int]$Matches[2] -gt $x)) {
+            return [IntPtr][int64]$Matches[1]
+        }
+    }
+    return [IntPtr]::Zero
+}
+
+function Check-SobreposicaoExtratos([string]$Rotulo, [IntPtr]$Main) {
+    $grade = Find-GridTransHwnd $Main
+    $valor = Find-AnteriorValorHwnd $Main
+    $lbl = [IntPtr]::Zero
+    foreach ($w in @([UiTest]::Visible($Main))) {
+        if ($w -match '\| id=(\d+) \| "Anterior:" \|') {
+            $lbl = [IntPtr][int64]$Matches[1]
+        }
+    }
+    $cobGrade = [UiTest]::AcimaSobreposta($grade)
+    $cobLbl = [UiTest]::AcimaSobreposta($lbl)
+    $cobValor = [UiTest]::AcimaSobreposta($valor)
+    Check $Rotulo (($grade -ne [IntPtr]::Zero) -and ($lbl -ne [IntPtr]::Zero) -and
+        ($valor -ne [IntPtr]::Zero) -and ($cobGrade -eq '') -and ($cobLbl -eq '') -and
+        ($cobValor -eq '')) (
+        'grade=' + $grade + ' cobrindo=' + $cobGrade +
+        ' rotulo=' + $lbl + ' cobrindo=' + $cobLbl +
+        ' valor=' + $valor + ' cobrindo=' + $cobValor)
+}
+
 # Acha o painel inferior com o botao "Voltar" entre as janelas NOVAS (em
 # relacao a $Base) e clica nele. tbBancos (pnBancosControl) e tbContas
 # (pnContas) tem a mesma geometria: 50px de altura e botao em (200,8) 79x30.
@@ -900,9 +1014,10 @@ try {
         $blocoNav.Contains('DataSource = DataSourceExtratos')) $detNav
     # Sem dgDisplayMemoText o TDBGrid desenha o literal "(MEMO)" no lugar do
     # conteudo (os campos TEXT do SQLite viram ftMemo) - e o desenho nao da
-    # para ler pela janela, entao a prova fica no .lfm. Vale para as 3
-    # grades de gestao; a de extratos e' a excecao de proposito, abaixo.
-    foreach ($nomeGrade in @('gridBancos', 'gridSaldos', 'gridContas')) {
+    # para ler pela janela, entao a prova fica no .lfm. Vale para as 2 grades
+    # que NAO formatam nada (bancos e contas); as de extratos e de saldos sao
+    # a excecao de proposito, com OnGetText no .pas, logo abaixo.
+    foreach ($nomeGrade in @('gridBancos', 'gridContas')) {
         $blocoGrade = Get-LfmBlock $lfmTexto ($nomeGrade + ': TDBGrid')
         $detGrade = 'bloco ' + $nomeGrade + ' nao encontrado no .lfm'
         if ($blocoGrade -ne '') {
@@ -920,6 +1035,17 @@ try {
     $memoOk = ($blocoGrid -ne '') -and (-not $blocoGrid.Contains('dgDisplayMemoText'))
     Check 'gridTrans sem dgDisplayMemoText (formatacao por OnGetText) (.lfm)' (
         $memoOk) $detMemo
+    # Mesma regra na grade de saldos: enddate e' texto ISO no arquivo e a
+    # exibicao vem do OnGetText (DD/MM/AAAA), entao o dgDisplayMemoText tem de
+    # estar fora - com ele ligado o editor receberia o ISO cru e a mascara
+    # (!99/00/0000) nao casaria.
+    $blocoGradeS = Get-LfmBlock $lfmTexto 'gridSaldos: TMoneyGrid'
+    $detMemoS = 'bloco gridSaldos nao encontrado no .lfm'
+    if ($blocoGradeS -ne '') {
+        $detMemoS = 'dgDisplayMemoText no bloco gridSaldos quebra a formatacao'
+    }
+    Check 'gridSaldos sem dgDisplayMemoText (enddate formatado por OnGetText) (.lfm)' (
+        ($blocoGradeS -ne '') -and (-not $blocoGradeS.Contains('dgDisplayMemoText'))) $detMemoS
     $ordemOk = $false
     $detColunas = $detGrid
     if ($blocoGrid -ne '') {
@@ -964,6 +1090,17 @@ try {
     $pasPath = Join-Path $root 'unitmoney.pas'
     if (Test-Path $pasPath) { $pasTexto = [IO.File]::ReadAllText($pasPath) }
     Check 'unitmoney.pas lido' ($pasTexto -ne '') $pasPath
+    # gridSaldos e' TMoneyGrid (subclasse com EditorCanAcceptKey proprio):
+    # a TDBGrid de base so' entrega a tecla ao editor em campo ftMemo (enddate
+    # e TEXT no SQLite) quando dgDisplayMemoText esta' ligado - e essa opcao
+    # tem de ficar fora porque a celula se formata pelo OnGetText (DD/MM/AAAA).
+    # Sem o override a digitacao da data some sem erro nenhum.
+    $gridClasseOk = $pasTexto.Contains('gridSaldos: TMoneyGrid;') -and
+        $pasTexto.Contains('TMoneyGrid = class(TDBGrid)') -and
+        ($pasTexto -match 'function TMoneyGrid\.EditorCanAcceptKey')
+    Check 'gridSaldos editavel: TMoneyGrid com EditorCanAcceptKey (.pas)' (
+        $gridClasseOk) ('TMoneyGrid/EditorCanAcceptKey ausente no ' +
+        'unitmoney.pas (digitacao em ftMemo recusada)')
     $faltaHandler = ''
     foreach ($ligacao in @(
         'dtposted=ExtratoDtpostedGetText',
@@ -1078,7 +1215,7 @@ try {
     # da conta escolhida no cbAccount, entao a conta que filtra nao aparece
     # (o registro novo recebe a conta pelo OnNewRecord da query). Seguem id
     # escondido e as 2 colunas restantes com largura igual entre si.
-    $blocoSaldos = Get-LfmBlock $lfmTexto 'gridSaldos: TDBGrid'
+    $blocoSaldos = Get-LfmBlock $lfmTexto 'gridSaldos: TMoneyGrid'
     $ordemSaldos = $false
     $detSaldos = 'bloco gridSaldos nao encontrado no .lfm'
     if ($blocoSaldos -ne '') {
@@ -1127,6 +1264,46 @@ try {
         ($pasTexto -match
             'procedure\s+TFormMoney\.SQLQuerySaldosNewRecord')) (
         'handler SQLQuerySaldosNewRecord ausente')
+    # enddate: gravado como AAAA-MM-DD (texto puro no SQLite) e exibido/editado
+    # como DD/MM/AAAA. Tres pecas obrigatorias: OnGetText (formata tambem o
+    # texto do editor, que e' o que a mascara espera), OnSetText (converte de
+    # volta, validando a data) e EditMask (insere as barras sozinhas). Os
+    # blocos sao lidos do .pas inteiros para a checagem pegar o corpo certo.
+    $blocoGetS = ''
+    if ($pasTexto -match '(?s)procedure\s+TFormMoney\.SaldosEnddateGetText.*?\nend;') {
+        $blocoGetS = $Matches[0]
+    }
+    $blocoSetS = ''
+    if ($pasTexto -match '(?s)procedure\s+TFormMoney\.SaldosEnddateSetText.*?\nend;') {
+        $blocoSetS = $Matches[0]
+    }
+    Check 'enddate da tbSaldos exibido como DD/MM/AAAA (.pas)' (
+        ($blocoGetS -ne '') -and
+        $blocoGetS.Contains(
+            "Copy(data, 9, 2) + '/' + Copy(data, 6, 2) + '/' + Copy(data, 1, 4)")) (
+        'SaldosEnddateGetText ausente ou sem a conversao AAAA-MM-DD -> DD/MM/AAAA')
+    Check 'enddate da tbSaldos gravado como AAAA-MM-DD (.pas)' (
+        ($blocoSetS -ne '') -and
+        $blocoSetS.Contains("FormatDateTime('yyyy-mm-dd'")) (
+        'SaldosEnddateSetText ausente ou sem a conversao DD/MM/AAAA -> AAAA-MM-DD')
+    # A mascara so' vale se for religada depois de cada Open (os campos sao
+    # dinamicos e a query de saldos so' abre em AplicarFiltroSaldos).
+    $blocoPrepS = ''
+    if ($pasTexto -match '(?s)procedure\s+TFormMoney\.PrepararCamposSaldos.*?\nend;') {
+        $blocoPrepS = $Matches[0]
+    }
+    $blocoFiltroS = ''
+    if ($pasTexto -match '(?s)procedure\s+TFormMoney\.AplicarFiltroSaldos.*?\nend;') {
+        $blocoFiltroS = $Matches[0]
+    }
+    Check 'mascara de data e handlers do enddate religados a cada Open (.pas)' (
+        ($blocoPrepS -ne '') -and
+        $blocoPrepS.Contains('OnGetText := @SaldosEnddateGetText') -and
+        $blocoPrepS.Contains('OnSetText := @SaldosEnddateSetText') -and
+        $blocoPrepS.Contains("EditMask := '!99/00/0000;1;_'") -and
+        ($blocoFiltroS -ne '') -and
+        $blocoFiltroS.Contains('PrepararCamposSaldos')) (
+        'PrepararCamposSaldos ausente, incompleto ou sem chamada em AplicarFiltroSaldos')
     # A lista de anos do cbYear vem de saldos.enddate (e nao de
     # extratos.dtposted): e' o que CarregarFiltrosExtratos consulta. O
     # negativo pega um "volta para extratos" sem trocar o SELECT inteiro.
@@ -1245,6 +1422,23 @@ try {
         Check 'item de menu "Novo Database" encontrado' ($idNovo -gt 0) ('id=' + $idNovo)
 
         if ($idNovo -gt 0) {
+            # Mesma regra do miOpen (passo [6]): as telas de gestao ficam
+            # disponiveis SEM database, entao o "Novo Database" de baixo roda
+            # COM a Lista de Bancos na tela - criar um arquivo tem de cair na
+            # tela de extratos, nao revelar a tela de gestao (e' o
+            # IrParaTelaExtratos do miNew, sem o qual o gridTrans ficava
+            # escondido: ele so' existe na tela de extratos).
+            $idLista5 = [UiTest]::MenuId($mainNovo, 'Lista de Bancos')
+            Check 'item de menu "Lista de Bancos" encontrado (passo [5])' (
+                $idLista5 -gt 0) ('id=' + $idLista5)
+            if ($idLista5 -gt 0) {
+                [void][UiTest]::Msg($mainNovo, 0x0111, [IntPtr]$idLista5,
+                    [IntPtr]::Zero)
+                $visLista5 = @(Wait-Interface $mainNovo $true)
+                Check 'navegacao para a Lista de Bancos revelou a interface (passo [5])' (
+                    $visLista5.Count -gt 0) ('janelas=' + $visLista5.Count)
+            }
+
             # Clique no menu: mesmo caminho de um clique real (WM_COMMAND)
             [void][UiTest]::Msg($mainNovo, 0x0111, [IntPtr]$idNovo, [IntPtr]::Zero)
 
@@ -1288,6 +1482,22 @@ try {
                 # sem esta revelacao a tela de extratos ficaria sem grade.
                 Check 'gridTrans exibida apos o miNew' (
                     Test-GridVisivel $mainNovo)
+                # ... e ACIMA das guias, junto com os textos do saldo
+                # anterior: sem isso a revelacao da pagina deixa a
+                # PageControl1 por cima e a tela aparece sem grade nenhuma e
+                # sem o "Anterior", com os dados escondidos la' atras.
+                Check-SobreposicaoExtratos 'sobreposicao da tela de extratos sem nada por cima (apos o miNew)' $mainNovo
+                # Regressao do miNew a partir de uma tela de gestao (a mesma
+                # do miOpen no passo [6]): criar tem de cair na tela de
+                # extratos - gridTrans visivel + o combo de ano, que so'
+                # existe nessa tela. A faixa de guias NAO serve de pegada:
+                # database novo nao tem saldo e guia de mes e' mes com saldo,
+                # entao a tela de extratos correta vem com zero guias.
+                Check 'miNew partiu da Lista de Bancos e caiu na tela de extratos' (
+                    (Test-GridVisivel $mainNovo) -and
+                    ((Find-ComboHwnd $mainNovo 100) -ne [IntPtr]::Zero)) (
+                    'gridTrans=' + (Test-GridVisivel $mainNovo) +
+                    ' cbYear=' + (Find-ComboHwnd $mainNovo 100))
             }
 
             $pNovo.Refresh()
@@ -1339,6 +1549,24 @@ try {
         $mainAbrir = $pAbrir.MainWindowHandle
         Check 'aplicacao abriu (janela principal)' ($mainAbrir -ne [IntPtr]::Zero)
 
+        # As telas de gestao ficam disponiveis SEM database (o miList), entao
+        # da' para abrir um arquivo por elas - e e' o caminho em que o
+        # gridTrans sumia da tela: a revelacao mostrava a tela de gestao (sem
+        # guias de mes e com a grade de transacoes escondida). Para provar a
+        # regra, o miOpen de baixo acontece COM a Lista de Bancos na tela.
+        $idLista6 = [UiTest]::MenuId($mainAbrir, 'Lista de Bancos')
+        Check 'item de menu "Lista de Bancos" encontrado (passo [6])' (
+            $idLista6 -gt 0) ('id=' + $idLista6)
+        if ($idLista6 -gt 0) {
+            [void][UiTest]::Msg($mainAbrir, 0x0111, [IntPtr]$idLista6,
+                [IntPtr]::Zero)
+            $visLista6 = @(Wait-Interface $mainAbrir $true)
+            Check 'navegacao para a Lista de Bancos revelou a interface' (
+                $visLista6.Count -gt 0) ('janelas=' + $visLista6.Count)
+            Check 'gridTrans escondida na tela de Lista de Bancos' (
+                -not (Test-GridVisivel $mainAbrir))
+        }
+
         # (a) arquivo valido: o dialogo fecha sozinho e nenhum aviso sobra
         $dlgOk = Invoke-MenuFileDialog $pAbrir 'Abrir Database'
         Check 'dialogo "Abrir" abriu (arquivo valido)' ($dlgOk -ne [IntPtr]::Zero)
@@ -1362,6 +1590,11 @@ try {
             # Mesma revelacao do passo [5], agora pelo caminho do miOpen.
             Check 'gridTrans exibida apos o miOpen' (
                 Test-GridVisivel $mainAbrir)
+            # ... e ACIMA das guias (a revelacao mostra a PageControl1 e ela
+            # sobe na pilha por cima da sobreposicao - e' o caminho do bug:
+            # grade e "Anterior" com WS_VISIBLE, porem escondidos atras das
+            # guias).
+            Check-SobreposicaoExtratos 'sobreposicao da tela de extratos sem nada por cima (apos o miOpen)' $mainAbrir
             # Combos de filtro da tela de extratos: "contas" e "saldos" estao
             # vazias neste ponto (database recem-criado no passo [5]), entao e'
             # aqui que a regra do "ano atual" e a lista de contas aparecem.
@@ -1371,6 +1604,15 @@ try {
             $nAno6    = Get-ComboCount $cbAno6
             Check 'cbYear lista o ano atual ("saldos" vazio)' ($nAno6 -eq 1) (
                 'combo=' + $cbAno6 + ' itens=' + $nAno6)
+            # Regressao do miOpen a partir de uma tela de gestao: abrir tem de
+            # CAIR NA TELA DE EXTRATOS - gridTrans visivel e o combo de ano,
+            # que so' existe nessa tela (a faixa de guias nao serve de pegada:
+            # database novo sem saldo vem com zero guias de mes, ja que guia
+            # de mes e' mes com saldo).
+            Check 'miOpen partiu da Lista de Bancos e caiu na tela de extratos' (
+                (Test-GridVisivel $mainAbrir) -and ($cbAno6 -ne [IntPtr]::Zero)) (
+                'gridTrans=' + (Test-GridVisivel $mainAbrir) +
+                ' cbYear=' + $cbAno6)
             Check 'cbAccount sem itens ("contas" vazia)' ($nConta6 -eq 0) (
                 'combo=' + $cbConta6 + ' itens=' + $nConta6)
             $pAbrir.Refresh()
@@ -1751,6 +1993,11 @@ try {
             # ... e a grade de extratos volta junto com a tela de extratos.
             Check 'gridTrans exibida de volta no Voltar' (
                 Test-GridVisivelEm $estCom)
+            # ... tambem ACIMA das guias: o "Voltar" roda o AtualizarAbasMes,
+            # que mexe guia por guia no TabVisible e reordena a pilha - o
+            # caminho em que a sobreposicao (grade e "Anterior") voltava
+            # escondida atras da PageControl1.
+            Check-SobreposicaoExtratos 'sobreposicao da tela de extratos sem nada por cima (apos o Voltar)' $mainNav
 
             # Controle do teste de vinculo: a suite nao grava conta nenhuma,
             # entao a grade da tbContas fica com scroll 0 - prova de que o
@@ -2287,6 +2534,233 @@ try {
             Check 'tbSaldos mostra so as linhas da conta do combo (150 de 151)' (
                 $linhasSal -eq 150) ('linhas=' + $linhasSal +
                 ' grade=' + $gradeSal)
+
+            # ---- enddate em EXECUCAO: o editor da coluna da data abre com o
+            # valor em DD/MM/AAAA (o arquivo guarda AAAA-MM-DD) e a mascara
+            # insere as barras sozinhas na digitacao. A navegacao e' TODA por
+            # teclado, de proposito: TCustomGrid.MouseDown sai cedo quando a
+            # grade nao esta focada (SetFocus falha com o form atras da IDE e a
+            # suite nunca traz o form para frente), e tecla nao passa por esse
+            # guard - e' por VK_F2 que o editor abre. HOME poe a coluna na
+            # primeira (balance), VK_RIGHT anda ate' a coluna cujo editor abre
+            # COM UMA DATA (a largura das colunas nao da para prever daqui:
+            # AutoFillColumns estica a ultima para os 852 da grade).
+            $editouData = $false
+            if ($gradeSal -ne [IntPtr]::Zero) {
+                $antesEd = @([UiTest]::Visible($gradeSal))
+                $editorSal = [IntPtr]::Zero
+                $colData = -1
+                [void][UiTest]::Msg($gradeSal, 0x0100, [IntPtr]0x24,
+                    [IntPtr]::Zero)                              # VK_HOME
+                [void][UiTest]::Msg($gradeSal, 0x0101, [IntPtr]0x24,
+                    [IntPtr]::Zero)
+                for ($passo = 0; ($passo -lt 3) -and ($colData -lt 0); $passo++) {
+                    if ($passo -gt 0) {
+                        # ESC fecha o editor sem gravar (nada digitado ainda) e
+                        # VK_RIGHT troca a coluna (MoveSel com gfEditingDone).
+                        [void][UiTest]::Msg($gradeSal, 0x0100, [IntPtr]0x1B,
+                            [IntPtr]::Zero)                      # VK_ESCAPE
+                        [void][UiTest]::Msg($gradeSal, 0x0101, [IntPtr]0x1B,
+                            [IntPtr]::Zero)
+                        [void][UiTest]::Msg($gradeSal, 0x0100, [IntPtr]0x27,
+                            [IntPtr]::Zero)                      # VK_RIGHT
+                        [void][UiTest]::Msg($gradeSal, 0x0101, [IntPtr]0x27,
+                            [IntPtr]::Zero)
+                    }
+                    [void][UiTest]::Msg($gradeSal, 0x0100, [IntPtr]0x71,
+                        [IntPtr]::Zero)                          # VK_F2
+                    [void][UiTest]::Msg($gradeSal, 0x0101, [IntPtr]0x71,
+                        [IntPtr]::Zero)
+                    Start-Sleep -Milliseconds 250
+                    # O editor e' uma janela FILHA da grade (FEditor.Parent :=
+                    # Self em grids.pas) com a classe nativa "Edit" (win32int.pp).
+                    # A grade nao tem nenhum filho visivel em repouso (as barras
+                    # de rolagem sao do proprio estilo da janela, sem janela
+                    # propria), entao achar um "Edit" filho apos o F2 e achar o
+                    # editor - e o handle NAO e' o mesmo entre aberturas (o
+                    # editor e' recriado), por isso a busca e' refeita a cada
+                    # passo. O texto da para ler por WM_GETTEXT (uma das 3
+                    # mensagens que o Windows faz marshaling cross-process - o
+                    # mesmo caminho do GetWindowText que Visible() ja' usa).
+                    $editorSal = [IntPtr]::Zero
+                    foreach ($wEd in @([UiTest]::Visible($gradeSal))) {
+                        if (($wEd -match '^Edit \|') -and
+                            ($antesEd -notcontains $wEd)) {
+                            $editorSal = [IntPtr][int64](
+                                [regex]::Match($wEd, 'id=(\d+)').
+                                    Groups[1].Value)
+                            break
+                        }
+                    }
+                    if ($editorSal -eq [IntPtr]::Zero) { continue }
+                    $txtCel = [UiTest]::GetText($editorSal)
+                    Write-Host ('  enddate: coluna ' + $passo +
+                        ' editor="' + $txtCel + '"')
+                    if ($txtCel -match '^\d{2}/\d{2}/\d{4}$') {
+                        $colData = $passo
+                    }
+                }
+                Check 'editor de enddate abriu com a data em DD/MM/AAAA (passo [10])' (
+                    $colData -ge 0) ('editor=' + $editorSal)
+                if ($colData -ge 0) {
+                    # ESC fecha o editor sem gravar (a data antiga continua no
+                    # arquivo - nada foi digitado).
+                    [void][UiTest]::Msg($gradeSal, 0x0100, [IntPtr]0x1B,
+                        [IntPtr]::Zero)                          # VK_ESCAPE
+                    [void][UiTest]::Msg($gradeSal, 0x0101, [IntPtr]0x1B,
+                        [IntPtr]::Zero)
+                    # Registro novo PELA PROPRIA interface: nbInsert e o 5o de
+                    # 10 botoes de largura igual do DBNavigator. O painel do
+                    # navigator nao passa pelo guard de foco do MouseDown da
+                    # grade - e' o mesmo caminho do "Delete" da tbContas, que ja'
+                    # funciona na suite. A coluna atual (enddate) nao muda com a
+                    # insercao, so a linha.
+                    $navSal = @([UiTest]::Visible($mainCb) |
+                        Where-Object { $_ -match ' 359x32$' }) |
+                        Select-Object -First 1
+                    Check 'DBNavigator da tbSaldos encontrado (passo [10])' (
+                        [bool]$navSal) ('linha=' + $navSal)
+                    if ($navSal) {
+                        $navSalHwnd = [IntPtr][int64](
+                            [regex]::Match($navSal, 'id=(\d+)').Groups[1].Value)
+                        $navSalW = [int]([regex]::Match($navSal,
+                            '\| \d+,\d+ (\d+)x\d+').Groups[1].Value)
+                        [void][UiTest]::ClickOn($navSalHwnd,
+                            [int][Math]::Floor($navSalW * 9 / 20), 16) # nbInsert
+                        Start-Sleep -Milliseconds 500
+                        # Registro novo: balance e' NOT NULL e o OnNewRecord
+                        # so' preenche a conta - o Post do VK_UP com o saldo
+                        # vazio rebenta no SQLite e abre a caixa de excecao do
+                        # LCL. O usuario preenche as duas colunas, entao o
+                        # teste tambem: HOME vai para a primeira (balance) e,
+                        # depois de digitar o saldo, VK_RIGHT fecha o editor e
+                        # passa para a coluna de enddate.
+                        [void][UiTest]::Msg($gradeSal, 0x0100, [IntPtr]0x24,
+                            [IntPtr]::Zero)                      # VK_HOME
+                        [void][UiTest]::Msg($gradeSal, 0x0101, [IntPtr]0x24,
+                            [IntPtr]::Zero)
+                        # Digita um texto numa celula como o usuario digita: a
+                        # 1a tecla vai para a GRADE (e' ela que abre o editor,
+                        # via EditorShowChar/EditorCanAcceptKey) e o resto vai
+                        # para o EDITOR (com EditorMode a grade nao repassa
+                        # WM_CHAR). As teclas vem como teclado de verdade
+                        # (KEYDOWN + CHAR + KEYUP): o win32 armanda
+                        # IgnoreNextCharWindow em TODO keydown (o F2/ESC/RIGHT
+                        # do passo acima deixou armado na grade) e so' desarma
+                        # no keydown que o LCL NAO trata - sem esse keydown o
+                        # WM_CHAR era engolido antes de chegar ao KeyPress da
+                        # grade. Espera o editor nascer E a 1a tecla entrar
+                        # antes de mandar as seguintes, para nao misturar o
+                        # POST que o SendCharToEditor fez com as mensagens da
+                        # suite. Devolve o texto final ('' = editor nao abriu).
+                        function Invoke-GridType([IntPtr]$grid, [string]$texto) {
+                            if ($texto -eq '') { return '' }
+                            $k1 = [Convert]::ToInt32($texto[0])
+                            [void][UiTest]::Msg($grid, 0x0100, [IntPtr]$k1,
+                                [IntPtr]::Zero)                  # WM_KEYDOWN
+                            [void][UiTest]::Msg($grid, 0x0102, [IntPtr]$k1,
+                                [IntPtr]::Zero)                  # WM_CHAR
+                            [void][UiTest]::Msg($grid, 0x0101, [IntPtr]$k1,
+                                [IntPtr]::Zero)                  # WM_KEYUP
+                            # EditorShowChar manda a propria tecla para o
+                            # editor (SendCharToEditor, WM_CHAR POST no
+                            # editor): a janela nasce agora - e' uma FILHA da
+                            # grade com a classe nativa "Edit", recriada a
+                            # cada abertura.
+                            $ed = [IntPtr]::Zero
+                            $txt = ''
+                            $alvo = [regex]::Escape($texto[0].ToString())
+                            for ($i = 0; ($i -lt 8) -and ($txt -notmatch $alvo);
+                                $i++) {
+                                Start-Sleep -Milliseconds 250
+                                if ($ed -eq [IntPtr]::Zero) {
+                                    foreach ($w in @([UiTest]::Visible($grid))) {
+                                        if ($w -match '^Edit \|') {
+                                            $ed = [IntPtr][int64](
+                                                [regex]::Match($w, 'id=(\d+)').
+                                                    Groups[1].Value)
+                                            break
+                                        }
+                                    }
+                                }
+                                if ($ed -ne [IntPtr]::Zero) {
+                                    $txt = [UiTest]::GetText($ed)
+                                }
+                            }
+                            if ($ed -eq [IntPtr]::Zero) { return '' }
+                            for ($i = 1; $i -lt $texto.Length; $i++) {
+                                [void][UiTest]::Msg($ed, 0x0102,
+                                    [IntPtr][Convert]::ToInt32($texto[$i]),
+                                    [IntPtr]::Zero)              # WM_CHAR
+                            }
+                            Start-Sleep -Milliseconds 250
+                            return [UiTest]::GetText($ed)
+                        }
+                        $txtSaldo = Invoke-GridType $gradeSal '10'
+                        Write-Host ('  balance: digitado="' + $txtSaldo + '"')
+                        Check 'saldo digitado no registro novo (passo [10])' (
+                            $txtSaldo -eq '10') ('texto="' + $txtSaldo + '"')
+                        [void][UiTest]::Msg($gradeSal, 0x0100, [IntPtr]0x27,
+                            [IntPtr]::Zero)                      # VK_RIGHT
+                        [void][UiTest]::Msg($gradeSal, 0x0101, [IntPtr]0x27,
+                            [IntPtr]::Zero)
+                        Start-Sleep -Milliseconds 250
+                        # A digitacao da data e' o caminho do usuario: a 1a
+                        # tecla na GRADE abre o editor (EditorShowChar so' o
+                        # abre se EditorCanAcceptKey deixar - enddate e' TEXT
+                        # -> ftMemo, e ftMemo e' blob para a TDBGrid de base,
+                        # que recusava a tecla e fazia a digitacao sumir sem
+                        # erro nenhum; o TMoneyGrid e' o que aceita) e o resto
+                        # vai para o EDITOR, onde o TCustomMaskEdit insere as
+                        # barras sozinhas. Registro novo vazio: o OnNewRecord
+                        # so' preenche a conta e o enddate vem NULL, que o
+                        # OnGetText devolve ''.
+                        $txtData = Invoke-GridType $gradeSal '31032028'
+                        Write-Host ('  enddate: digitado="' + $txtData + '"')
+                        Check 'digitou na grade e o editor de enddate abriu (passo [10])' (
+                            $txtData -ne '') ('texto="' + $txtData + '"')
+                        # A mascara roda no TCustomMaskEdit: CanInsertChar
+                        # filtra o caractere e pula os separadores, entao
+                        # digitar 31032028 tem de virar 31/03/2028 - sem a
+                        # mascara viraria 31032028 na cara do usuario.
+                        Check 'mascara de enddate insere as barras sozinhas (passo [10])' (
+                            $txtData -eq '31/03/2028') (
+                            'texto="' + $txtData + '"')
+                        $editouData = ($txtData -eq '31/03/2028')
+                        # VK_UP fecha o editor e POE o registro novo: a
+                        # primeira tecla ja' pousou a query em dsEdit
+                        # (EditorIsReadOnly chama FDataLink.Edit) e marcou o
+                        # datalink como modified, entao o InsertCancelable do
+                        # doVKUP e' False e o MoveBy(-1) da Post - e e' no
+                        # Post que o FTempText vira Field.Text (OnUpdateData),
+                        # onde o OnSetText grava AAAA-MM-DD. VK_UP e' de
+                        # proposito: o registro novo e' o ULTIMO, e VK_DOWN
+                        # cairia em EOF e pediria mais um registro (opAppend).
+                        [void][UiTest]::Msg($gradeSal, 0x0100, [IntPtr]0x26,
+                            [IntPtr]::Zero)                  # VK_UP
+                        [void][UiTest]::Msg($gradeSal, 0x0101, [IntPtr]0x26,
+                            [IntPtr]::Zero)
+                        Start-Sleep -Milliseconds 500
+                    }
+                }
+            }
+            # Se voltou a rebentar na hora de gravar (ex.: balance NOT NULL
+            # sem saldo), a mensagem sai no log e a caixa e' dispensada - sem
+            # isso ela fica pendurada e polui os FindDialog dos passos
+            # seguintes; a falha em si ja' fica registrada logo abaixo.
+            $dlgEd = [UiTest]::FindDialog([uint32]$pCb.Id)
+            if ($dlgEd -ne [IntPtr]::Zero) {
+                Write-Host ('  dialogo ao gravar enddate: "' +
+                    [UiTest]::DialogText($dlgEd) + '"')
+                $okDlg = [UiTest]::FindOkButton($dlgEd)
+                if ($okDlg -ne [IntPtr]::Zero) {
+                    [void][UiTest]::Msg($okDlg, 0x00F5, [IntPtr]::Zero,
+                        [IntPtr]::Zero)                        # BM_CLICK
+                    Start-Sleep -Milliseconds 300
+                }
+            }
+            Check 'nenhum dialogo ao editar enddate (passo [10])' (
+                $dlgEd -eq [IntPtr]::Zero) ('hwnd=' + $dlgEd)
         }
 
         # Estado inicial: so' a conta do passo [9].
@@ -2323,7 +2797,9 @@ try {
             Start-Sleep -Milliseconds 500
             $dlgPint = [UiTest]::FindDialog([uint32]$pCb.Id)
             Check 'nenhum dialogo de erro ao pintar a grade de contas (passo [10])' (
-                $dlgPint -eq [IntPtr]::Zero) ('hwnd=' + $dlgPint)
+                $dlgPint -eq [IntPtr]::Zero) (
+                'hwnd=' + $dlgPint + ' texto="' +
+                [UiTest]::DialogText($dlgPint) + '"')
 
             $navCb = @($aposCb | Where-Object { $_ -match ' 359x32$' }) |
                 Select-Object -First 1
@@ -2412,6 +2888,34 @@ try {
             try { $pCb.Kill(); $pCb.WaitForExit() } catch { }
         }
     }
+
+    # A digitacao na grade do passo [10] so' da para conferir no arquivo com a
+    # conexao encerrada (mesmo motivo do delete de contas): a mascara deixou
+    # 31/03/2028 na tela do registro novo e o campo tem de ter gravado
+    # 2028-03-31 (150 da conta + 1 da outra conta + 1 digitado).
+    $qtdIsoSal = [Sq]::Consultar($minewDb,
+        "SELECT COUNT(*) FROM saldos WHERE enddate = '2028-03-31';")
+    Check 'enddate digitado na grade gravado em AAAA-MM-DD (passo [10])' (
+        $editouData -and ($qtdIsoSal -eq 1)) (
+        'editou=' + $editouData + ' qtd=' + $qtdIsoSal)
+    $qtdSalTot = [Sq]::Consultar($minewDb, 'SELECT COUNT(*) FROM saldos;')
+    Check 'linha digitada na grade entrou em saldos (passo [10])' (
+        $qtdSalTot -eq 152) ('qtd=' + $qtdSalTot)
+    # O saldo digitado na coluna balance tem de ter ido junto com a data:
+    # balance e' NOT NULL, entao sem ele o Post do VK_UP nao grava nada (e'
+    # por isso que o registro novo do teste leva saldo + data).
+    $qtdSalSaldo = [Sq]::Consultar($minewDb,
+        "SELECT COUNT(*) FROM saldos WHERE enddate = '2028-03-31'" +
+        " AND balance = 10;")
+    Check 'saldo digitado gravado junto com a data (passo [10])' (
+        $qtdSalSaldo -eq 1) ('qtd=' + $qtdSalSaldo)
+    # Nenhum enddate pode ter virado lixo no meio da edicao (o formato do
+    # arquivo e' sempre AAAA-MM-DD, com ou sem edicao).
+    $qtdLixoSal = [Sq]::Consultar($minewDb,
+        "SELECT COUNT(*) FROM saldos WHERE enddate NOT GLOB" +
+        " '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]';")
+    Check 'nenhum enddate virou lixo depois da edicao (passo [10])' (
+        $qtdLixoSal -eq 0) ('qtd=' + $qtdLixoSal)
 
     # Volta banks.db ao estado do passo: o banco de teste so' existiu para o
     # laco da traducao do "Banco" rodar com dados (arquivo livre agora, com

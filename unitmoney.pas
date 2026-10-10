@@ -6,9 +6,25 @@ interface
 
 uses
   Classes, SysUtils, SQLite3Conn, SQLDB, Forms, Controls, Graphics, Dialogs,
-  ComCtrls, ExtCtrls, StdCtrls, Menus, DB, Grids, DBGrids, DBCtrls, Buttons;
+  ComCtrls, ExtCtrls, StdCtrls, Menus, DB, Grids, DBGrids, DBCtrls, Buttons,
+  LCLType;
 
 type
+
+  { TMoneyGrid }
+
+  // TDBGrid que também aceita digitação em campos ftMemo. Os TEXT do SQLite
+  // viram ftMemo no driver (e ftMemo é blob para a grade): a TDBGrid de base
+  // só entrega a tecla ao editor se dgDisplayMemoText estiver ligado - mas,
+  // com a opção ligada, a célula lê o texto cru do campo e ignora o OnGetText
+  // que formata (DD/MM/AAAA no fim da tbSaldos). Sem a opção a formatação
+  // funciona e a digitação some; aqui vale a validação da base só sem essa
+  // trava de blob, então a coluna de enddate (máscara !99/00/0000) edita e o
+  // OnSetText continua gravando AAAA-MM-DD.
+  TMoneyGrid = class(TDBGrid)
+  protected
+    function EditorCanAcceptKey(const Ch: TUTF8Char): boolean; override;
+  end;
 
   { TFormMoney }
 
@@ -20,7 +36,7 @@ type
     DBNavTrans: TDBNavigator;
     DBNavSaldos: TDBNavigator;
     gridContas: TDBGrid;
-    gridSaldos: TDBGrid;
+    gridSaldos: TMoneyGrid;
     gridTrans: TDBGrid;
     gridBancos: TDBGrid;
     lblTitle: TLabel;
@@ -135,6 +151,19 @@ type
     procedure miOpenClick(Sender: TObject);
     procedure PageControl1Change(Sender: TObject);
     procedure sbtnVoltarClick(Sender: TObject);
+    // enddate da tbSaldos: gravado em ISO (AAAA-MM-DD, texto puro no SQLite)
+    // e exibido/editado como DD/MM/AAAA - a coluna tem EditMask, que insere
+    // as barras sozinhas na digitação. Ao contrário do dtposted dos extratos,
+    // o texto do editor (DisplayText=False) TAMBÉM vem formatado: quem dita a
+    // forma do que se digita é a máscara, e ela espera DD/MM/AAAA.
+    procedure SaldosEnddateGetText(Sender: TField; var AText: string;
+      DisplayText: Boolean);
+    // Gravação da célula: o DBGrid faz Field.Text := texto do editor (que sai
+    // da máscara como DD/MM/AAAA) e o SetEditText do campo vem parar aqui.
+    // Vazio limpa a data (fica '' - enddate é NOT NULL, então NULL daria
+    // erro de constraint); texto que não seja uma data válida não mexe no
+    // valor, como no banco de tbBancos.
+    procedure SaldosEnddateSetText(Sender: TField; const AText: string);
     // Liga os handlers de banco (OnGetText/OnSetText) a cada Open da query de
     // contas: os campos são dinâmicos e cada Open os recria sem handlers —
     // o mesmo problema, e a mesma solução, dos extratos (PrepararCamposExtratos).
@@ -154,6 +183,24 @@ type
     // Base do miList/miGerCon: guarda guias + título e ativa a aba com as
     // guias ocultas (o "Voltar" devolve o estado salvo aqui).
     procedure NavigateToTab(ATab: TTabSheet);
+    // Tela de transações (a de entrada): devolve as guias que a navegação de
+    // gestão escondeu, volta para tbJan e recalcula as guias de mês pelo dado
+    // gravado. É o que o "Voltar" executa e o que miNew/miOpen também têm de
+    // executar: as telas de gestão ficam disponíveis sem database, então dá
+    // para abrir um arquivo estando nelas - e, sem este passo, a revelação
+    // mostraria aquela tela, sem o gridTrans (que só existe na tela de
+    // extratos).
+    procedure IrParaTelaExtratos;
+    // Devolve para o TOPO da pilha de janelas os controles do FORM que
+    // sobrepõem a área das guias na tela de extratos: o gridTrans e os dois
+    // textos do saldo anterior (tslblAnterior, o rótulo "Anterior:", e
+    // tsAnterior, o campo do valor), que ficam na faixa das guias. Cada
+    // mexida nas guias (mostrar a PageControl1 na revelação, mexer no
+    // TabVisible das guias de mês) coloca a PageControl1 ACIMA deles na pilha
+    // de irmãos - e é justamente o que cobre a área deles. Sem este empurrão
+    // eles ficam com WS_VISIBLE, só que escondidos atrás das guias: a tela
+    // aparece "sem grade nenhuma" e sem o "Anterior" para o usuário.
+    procedure GarantirSobreposicaoNaFrente;
     // Liga/desliga os blocos de interface (cabeçalho, guias, rodapé e textos
     // "Anterior"). Revela em: navegação (miList/miGerCon), miNew e miOpen;
     // esconde em: inicialização, "Voltar" sem database e miClose. No revelar
@@ -189,6 +236,10 @@ type
     // handlers, então a ligação é refeita logo depois de abrir — e abrir é
     // sempre por aqui (AplicarFiltroExtratos é o único ponto de Open).
     procedure PrepararCamposExtratos;
+    // Liga a máscara de data e os handlers de enddate da tbSaldos (mesmo
+    // motivo e mesmo ponto dos extratos: os campos são recriados a cada Open
+    // de SQLQuerySaldos, que só acontece em AplicarFiltroSaldos).
+    procedure PrepararCamposSaldos;
     procedure LimparFiltrosExtratos;
     // Remonta o combo de contas direto do database, mantendo a conta que o
     // usuário tinha escolhido (pelo id, para sobreviver à edição do texto).
@@ -217,6 +268,26 @@ uses
   unitDatabase, unitOfx;
 
 {$R *.lfm}
+
+{ TMoneyGrid }
+
+// Mesmo critério da TDBGrid.EditorCanAcceptKey, pulando só a exigência de
+// blob: campo ftMemo com OnGetText (o caso do enddate) é editável como texto
+// comum - a formatação da célula é do OnGetText, não do dgDisplayMemoText.
+function TMoneyGrid.EditorCanAcceptKey(const Ch: TUTF8Char): boolean;
+var
+  campo: TField;
+begin
+  Result := inherited EditorCanAcceptKey(Ch);
+  if Result or (Ch = '') then
+    Exit;
+  campo := SelectedField;
+  if (campo = nil) or (campo.DataType <> ftMemo) or campo.Calculated or
+     (campo.FieldKind = fkLookup) then
+    Exit;
+  // IsValidChar é o mesmo da base: dígito, barra ou backspace, byte a byte.
+  Result := IsValidChar(campo, Ch);
+end;
 
 { TFormMoney }
 
@@ -327,6 +398,29 @@ begin
     lblTitle.Caption := 'Gerenciamento de Saldos'
   else
     lblTitle.Caption := FSavedTitle;
+
+  // Por último: revelar a interface (SetInterfaceVisible mostra a
+  // PageControl1) é o que a coloca no TOPO da pilha de irmãos, por cima da
+  // grade e dos textos "Anterior" - sem o empurrão, a página vem cobrindo
+  // tudo o que o form desenha sobre a área das guias, e o usuário vê a tela
+  // de extratos sem grade nenhuma e sem o saldo anterior (os dados estão lá,
+  // atrás).
+  GarantirSobreposicaoNaFrente;
+end;
+
+procedure TFormMoney.GarantirSobreposicaoNaFrente;
+begin
+  // Só quando a tela de extratos está de pé (a grade revelada é o sinal, e a
+  // página tem de estar visível junto): nas telas de gestão os três estão
+  // escondidos, e na inicialização a página também - não há o que empurrar.
+  if not (gridTrans.Visible and PageControl1.Visible) then
+    Exit;
+  // Os textos ocupam a fileira de cima (Top=53, na faixa das guias) e a grade
+  // vem logo abaixo (Top=76): nenhum cobre o outro, então o que importa é
+  // estarem todos ACIMA da PageControl1 - a ordem entre eles é indiferente.
+  tslblAnterior.BringToFront;
+  tsAnterior.BringToFront;
+  gridTrans.BringToFront;
 end;
 
 procedure TFormMoney.NavigateToTab(ATab: TTabSheet);
@@ -649,6 +743,12 @@ begin
     // Sem saldo no ano a última guia some e o LCL deixa a página sem guia
     // ativa (FPageIndex = -1). Volta para tbJan, que é a página de entrada.
     PageControl1.ActivePage := tbJan;
+
+  // Esconder/mostrar guia por guia acima reorganiza a pilha de janelas e
+  // pode deixar a PageControl1 por cima da sobreposição (grade + "Anterior")
+  // mesmo quando a aba ativa NÃO muda (aí o OnChange não dispara e o
+  // PageControl1Change não roda) - o empurrão aqui cobre esse caminho também.
+  GarantirSobreposicaoNaFrente;
 end;
 
 procedure TFormMoney.AplicarFiltroExtratos;
@@ -729,6 +829,9 @@ begin
   SQLQuerySaldos.Close;
   SQLQuerySaldos.SQL.Text := sql;
   SQLQuerySaldos.Open;
+  // Campos recriados no Open: máscara de data e formatação de enddate têm de
+  // ser religados (é o que PrepararCamposExtratos faz nos extratos).
+  PrepararCamposSaldos;
 end;
 
 // dtposted é texto: o importador grava AAAAMMDD (o formato ISO AAAA-MM-DD
@@ -981,6 +1084,62 @@ begin
   SQLQueryExtratos.FieldByName('memo').OnGetText := @ExtratoTextoGetText;
   SQLQueryExtratos.FieldByName('chknum').OnGetText := @ExtratoTextoGetText;
   SQLQueryExtratos.FieldByName('trnamt').OnGetText := @ExtratoTrnAmtGetText;
+end;
+
+// enddate é TEXT (ftMemo no driver SQLite): sem dgDisplayMemoText a grade
+// desenha pelo DisplayText - e, como a coluna tem máscara, o texto tem de vir
+// DD/MM/AAAA também no editor (DisplayText=False), senão a edição começaria
+// com o valor ISO cru, fora das posições da máscara. O que fica gravado não
+// muda: é o OnSetText que converte de volta.
+procedure TFormMoney.SaldosEnddateGetText(Sender: TField; var AText: string;
+  DisplayText: Boolean);
+var
+  data: string;
+begin
+  data := Sender.AsString;
+  if (Length(data) = 10) and (data[5] = '-') and (data[8] = '-') then
+    data := Copy(data, 9, 2) + '/' + Copy(data, 6, 2) + '/' + Copy(data, 1, 4);
+  AText := data;
+end;
+
+// Aceita o que a máscara produz (DD/MM/AAAA) e também o formato gravado
+// (AAAA-MM-DD, para colar de fora). Dia/mês fora do lugar não é data: o valor
+// fica como estava, sem inventar conversão.
+procedure TFormMoney.SaldosEnddateSetText(Sender: TField; const AText: string);
+var
+  data: string;
+  dataGravada: TDateTime;
+begin
+  data := Trim(AText);
+  if data = '' then
+  begin
+    // enddate é NOT NULL: vazio vira texto vazio, que o SQLite aceita.
+    Sender.AsString := '';
+    Exit;
+  end;
+  if (Length(data) = 10) and (data[3] = '/') and (data[6] = '/') and
+     TryEncodeDate(StrToIntDef(Copy(data, 7, 4), 0),
+       StrToIntDef(Copy(data, 4, 2), 0), StrToIntDef(Copy(data, 1, 2), 0),
+       dataGravada) then
+    Sender.AsString := FormatDateTime('yyyy-mm-dd', dataGravada)
+  else if (Length(data) = 10) and (data[5] = '-') and (data[8] = '-') and
+     TryEncodeDate(StrToIntDef(Copy(data, 1, 4), 0),
+       StrToIntDef(Copy(data, 6, 2), 0), StrToIntDef(Copy(data, 9, 2), 0),
+       dataGravada) then
+    Sender.AsString := FormatDateTime('yyyy-mm-dd', dataGravada);
+end;
+
+// Liga a máscara de data e os handlers de enddate logo depois de cada Open:
+// os campos são dinâmicos (FieldDefs vazio) e cada abertura os recria - mesmo
+// problema, mesma solução, dos extratos e do bankid das contas. A máscara
+// "!99/00/0000;1;_" fixa as posições pela esquerda, aceita só dígito nas 8
+// casas, insere as duas barras sozinha e, pelo "1" do segundo campo, devolve
+// o texto COM as barras ao campo (é o que o OnSetText espera ler).
+procedure TFormMoney.PrepararCamposSaldos;
+begin
+  SQLQuerySaldos.FieldByName('enddate').OnGetText := @SaldosEnddateGetText;
+  SQLQuerySaldos.FieldByName('enddate').OnSetText := @SaldosEnddateSetText;
+  SQLQuerySaldos.FieldByName('enddate').EditMask := '!99/00/0000;1;_';
 end;
 
 procedure TFormMoney.LimparFiltrosExtratos;
@@ -1250,6 +1409,13 @@ begin
   end;
   // Criou e abriu: a página aparece e o "Fechar Database" é ativado (se não
   // abriu, a ligação anterior já tinha sido fechada e os dois são desligados).
+  // A tela de entrada é a de transações: as telas de gestão ficam disponíveis
+  // sem database (miList), então dá para criar um arquivo estando nelas -
+  // sem o passo abaixo a revelação mostraria aquela tela, com o gridTrans
+  // escondido (ele só existe na tela de extratos). Se o arquivo não abriu,
+  // nada muda por aqui.
+  if DatabaseAberto then
+    IrParaTelaExtratos;
   AtualizarEstadoDatabase;
 end;
 
@@ -1313,11 +1479,24 @@ begin
         mtError, [mbOK], 0);
   end;
   // Abriu: a página aparece e o "Fechar Database" é ativado (um arquivo
-  // rejeitado antes daqui nem mexe na ligação: nada muda por aqui).
+  // rejeitado antes daqui nem mexe na ligação: nada muda por aqui). A tela de
+  // entrada é a de transações - como as telas de gestão ficam disponíveis sem
+  // database, dá para abrir um arquivo estando nelas, e sem o passo abaixo a
+  // revelação mostraria aquela tela com o gridTrans escondido (ele só existe
+  // na tela de extratos). Se o arquivo não abriu, nada muda por aqui.
+  if DatabaseAberto then
+    IrParaTelaExtratos;
   AtualizarEstadoDatabase;
 end;
 
-procedure TFormMoney.sbtnVoltarClick(Sender: TObject);
+// Volta para a tela de transações (a de entrada): devolve as guias que a
+// navegação de gestão escondeu e recalcula as guias de mês pelo dado gravado,
+// com a aba ativa no mês mais recente. Compartilhada pelo "Voltar" e pela
+// abertura de database - abrir num arquivo novo tem de cair aqui, mesmo que o
+// usuário estivesse numa tela de gestão (elas ficam disponíveis sem database,
+// então dá para abrir um arquivo por elas - e, sem este passo, o gridTrans
+// ficaria escondido, já que ele só existe na tela de extratos).
+procedure TFormMoney.IrParaTelaExtratos;
 var
   i: Integer;
 begin
@@ -1332,9 +1511,14 @@ begin
   PageControl1.ActivePage := tbJan;
   // As guias de mês são dinâmicas: o que a tela de gestão mexeu em "saldos"
   // pode ter mudado os meses do ano, então recarrega pelo dado da tabela e
-  // põe a aba ativa no mês mais recente. Sem database a chamada é que esconde
-  // as guias devolvidas pela restauração acima.
+  // põe a aba ativa no mês mais recente. Sem database a chamada não faz nada
+  // (é o estado do "Voltar" sem database, que esconde a interface logo abaixo).
   AtualizarAbasMes;
+end;
+
+procedure TFormMoney.sbtnVoltarClick(Sender: TObject);
+begin
+  IrParaTelaExtratos;
   // Depois do OnChange acima (senão o rodapé voltaria a aparecer): sem
   // database em aberto não há o que mostrar na tela de extratos, então o
   // "Voltar" devolve o estado inicial (só o MainMenu). Com database (miNew/
