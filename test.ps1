@@ -585,17 +585,20 @@ function Add-SaldosRows([string]$Path, [int]$Count, [string]$Ano, [string]$Mes) 
 }
 
 # Grava N linhas em "extratos" (a tabela da grade da tela de extratos) datadas
-# do ano informado: e' o que o combo de ano da tela tem de listar e o que o
-# filtro do ano selecionado tem de deixar passar. O arquivo tem de estar LIVRE
+# do ano E do MES informados: e' o que o combo de ano da tela tem de listar e
+# o que o filtro do ano selecionado + da guia ATIVA (mes da aba) tem de deixar
+# passar - por isso as linhas sao gravadas em meses que tenham guia. O dia '15'
+# e' de proposito (vale para qualquer mes). O arquivo tem de estar LIVRE
 # (conexao encerrada). Devolve as linhas gravadas DESSE ano (0 = arquivo
 # ausente/falhou - quem reporta e' o chamador).
-function Add-ExtratosRows([string]$Path, [int]$Count, [string]$Ano) {
+function Add-ExtratosRows([string]$Path, [int]$Count, [string]$Ano, [string]$Mes) {
     if (-not (Test-Path $Path)) { return 0 }
     # Mesmo truque do INSERT com CTE recursivo: uma sentenca so'.
     $sql = 'WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c' +
         ' WHERE x < ' + $Count + ') INSERT INTO "extratos"' +
         " (account_id, trntype, dtposted, trnamt, memo)" +
-        " SELECT 1, 'DEBIT', '" + $Ano + "-06-15', -x * 1.5, 'linha ' || x FROM c;"
+        " SELECT 1, 'DEBIT', '" + $Ano + "-" + $Mes + "-15', -x * 1.5," +
+        " 'linha ' || x FROM c;"
     if ([Sq]::Executar($Path, $sql) -le 0) { return 0 }
     # Conta com a MESMA expressao do ano que a aplicacao usa no filtro: se o
     # texto gravado nao casar com substr(dtposted,1,4), a checagem falha aqui.
@@ -771,6 +774,30 @@ function Find-TabHwnd([IntPtr]$Main) {
     [UiTest]::FindChild($Main, 'SysTabControl32')
 }
 
+# Clica na faixa de guias ate' TCM_GETCURSEL devolver o indice pedido - e'
+# o caminho do usuario (WM_LBUTTONDOWN/UP na SysTabControl32, que dispara o
+# OnChange da pagina e refaz o filtro da grade). A largura da guia depende da
+# fonte do Windows, entao em vez de chutar a posicao varre a faixa em passos
+# e confirma pelo proprio clique; nao da para medir o item, porque TCM_GETITEM
+# le um buffer do PROCESSO DO ALVO (proibido em envio cross-process - ja'
+# derrubou a aplicacao). Devolve a guia que ficou ativa (-1 = nao chegou la).
+function Select-AbaMes([IntPtr]$Main, [int]$Alvo) {
+    $tab = Find-TabHwnd $Main
+    if ($tab -eq [IntPtr]::Zero) { return -1 }
+    if ([UiTest]::TabSel($tab) -eq $Alvo) { return $Alvo }
+    # y=10 fica dentro da fileira das guias (a faixa tem ~24px) e x anda da
+    # esquerda para a direita, de onde sao as JAN..DEZ. O clique e' POSTADO,
+    # entao a selecao so' muda quando o alvo bomba a fila: espera a reacao
+    # antes do proximo ponto, senao a varredura avanca sem resultado.
+    for ($rx = 4; ($rx -le 240) -and ([UiTest]::TabSel($tab) -ne $Alvo); $rx += 4) {
+        [void][UiTest]::ClickOn($tab, $rx, 10)
+        for ($t = 0; ($t -lt 6) -and ([UiTest]::TabSel($tab) -ne $Alvo); $t++) {
+            Start-Sleep -Milliseconds 50
+        }
+    }
+    return [UiTest]::TabSel($tab)
+}
+
 # A grade de extratos (gridTrans) e' controle do FORM com Align=alClient: ela
 # sobrepoe a area das guias e so' aparece na tela de extratos, com database
 # aberto. Identificacao: janela da largura do form (860 - as grades das abas
@@ -804,6 +831,24 @@ function Find-GridTransHwnd([IntPtr]$Main) {
         }
     }
     return [IntPtr]::Zero
+}
+
+# Linhas que a grade de extratos esta' EXIBINDO agora. A barra vertical e' a
+# nativa do TDBGrid e o numero de linhas reais sai de VScrollRows (nMax -
+# nPage + 2, o mesmo calculo ja' calibrado na tbSaldos). Depois de uma troca
+# de guia/ano a query fecha e reabre, e a barra so' volta quando o LCL remonta
+# a grade - entao rele a tela ate' dar um numero (>= 0); -1 no fim = a grade
+# nao tem barra (ou nao achou a grade).
+function Get-GridTransLinhas([IntPtr]$Main) {
+    $linhas = -1
+    for ($t = 0; ($t -lt 12) -and ($linhas -lt 0); $t++) {
+        if ($t -gt 0) { Start-Sleep -Milliseconds 250 }
+        $grade = Find-GridTransHwnd $Main
+        if ($grade -ne [IntPtr]::Zero) {
+            $linhas = [UiTest]::VScrollRows($grade)
+        }
+    }
+    return $linhas
 }
 
 # Os controles do FORM que sobrepoeem a area das guias na tela de extratos - a
@@ -1825,14 +1870,21 @@ try {
             ($nSal2603 -eq 75) -and ($nSal2501 -eq 150)) (
             '2026-01=' + $nSal2601 + ' 2026-02=' + $nSal2602 +
             ' 2026-03=' + $nSal2603 + ' 2025-01=' + $nSal2501)
-        # Mesma prova para a tela de extratos: dois anos em "extratos" (75 +
-        # 75) casando com os anos de "saldos" - o filtro do ano selecionado
-        # tem de deixar passar as linhas desse ano.
-        $n2025 = Add-ExtratosRows $minewDb 75 '2025'
-        $n2026 = Add-ExtratosRows $minewDb 75 '2026'
+        # Mesma prova para a tela de extratos: linhas NOS MESES DAS GUIAS,
+        # porque a grade mostra o MES da aba ativa (ano do cbYear + mes da
+        # guia) - 2026 em JAN/FEV/MAR (os tres meses com saldo, que viram
+        # guia) e 2025 so' em JAN (unico mes com saldo la). As contagens
+        # tambem passam do que cabe na tela (~25 linhas), ja' que e' pela
+        # barra de rolagem que a suite le o que a grade mostra.
+        $n2601 = Add-ExtratosRows $minewDb 50 '2026' '01'
+        $n2602 = Add-ExtratosRows $minewDb 60 '2026' '02'
+        $n2603 = Add-ExtratosRows $minewDb 70 '2026' '03'
+        $n2501 = Add-ExtratosRows $minewDb 80 '2025' '01'
         Check 'linhas de teste gravadas em "extratos" (passo [8])' (
-            ($n2025 -eq 75) -and ($n2026 -eq 75)) (
-            '2025=' + $n2025 + ' 2026=' + $n2026)
+            ($n2601 -eq 50) -and ($n2602 -eq 110) -and ($n2603 -eq 180) -and
+            ($n2501 -eq 80)) (
+            '2026=' + $n2601 + '/' + $n2602 + '/' + $n2603 +
+            ' 2025=' + $n2501)
 
         $pNav = Start-Process -FilePath $exe -WorkingDirectory $root -PassThru
         Start-Sleep -Seconds 3
@@ -1939,6 +1991,12 @@ try {
                 ([UiTest]::TabSel($guia8) -eq ($nGuias8 - 1)) -and
                 ($nGuias8 -eq 3)) ('sel=' + [UiTest]::TabSel($guia8) +
                 ' de ' + $nGuias8)
+            # A grade mostra o MES da aba ativa (ano + mes, e nao mais o ano
+            # inteiro): na guia MAR/2026 cabem as 70 linhas de teste desse
+            # mes - as de JAN/FEV ficam escondidas atras da troca de guia.
+            $linhasMar8 = Get-GridTransLinhas $mainNav
+            Check 'grade mostra o mes da aba ativa (MAR 2026 = 70 linhas)' (
+                $linhasMar8 -eq 70) ('linhas=' + $linhasMar8)
 
             # Trocar o ano refaz a faixa: 2025 so' tem saldo em janeiro, entao
             # sobra uma guia (a de janeiro, unica do ano) e ela vira a ativa.
@@ -1956,12 +2014,43 @@ try {
             Check 'aba ativa em janeiro no ano 2025' (
                 [UiTest]::TabSel($guia25) -eq 0) (
                 'sel=' + [UiTest]::TabSel($guia25))
+            # Trocar o ano troca a guia E o filtro: em 2025 a guia e' so'
+            # JAN, com as 80 linhas de teste desse mes (as de 2026 somem junto
+            # com o ano).
+            $linhasAno25 = Get-GridTransLinhas $mainNav
+            Check 'grade no ano 2025 (guia JAN) = 80 linhas' (
+                $linhasAno25 -eq 80) ('linhas=' + $linhasAno25)
             # Volta para o ano inicial: os passos seguintes esperam 2026 (o
             # mais recente) e as 3 guias dele.
             [void][UiTest]::SelectCombo($cbAno8, 0)
             $nGuiasVolta = [UiTest]::TabCount((Find-TabHwnd $mainNav))
             Check 'cbYear de volta ao ano com as 3 guias' ($nGuiasVolta -eq 3) (
                 'guias=' + $nGuiasVolta)
+            $linhasVolta = Get-GridTransLinhas $mainNav
+            Check 'grade de volta em 2026 (guia MAR) = 70 linhas' (
+                $linhasVolta -eq 70) ('linhas=' + $linhasVolta)
+
+            # Clicar em OUTRA guia tem de refazer o filtro - e' o caminho do
+            # usuario e o gatilho novo (o PageControl1Change chama a
+            # filtragem): JAN/2026 = 50 linhas, FEV/2026 = 60, nunca as 180
+            # do ano inteiro. O clique e' WM_LBUTTONDOWN/UP na propria
+            # SysTabControl32 (Select-AbaMes varre a faixa, ja' que a largura
+            # da guia depende da fonte do Windows).
+            $selJan8 = Select-AbaMes $mainNav 0
+            Check 'clique na guia JAN ativou a guia' ($selJan8 -eq 0) (
+                'sel=' + $selJan8)
+            Check 'aplicacao viva apos o clique na guia (passo [8])' (
+                -not $pNav.HasExited)
+            $linhasJan8 = Get-GridTransLinhas $mainNav
+            Check 'grade refiltrada na guia JAN 2026 = 50 linhas' (
+                $linhasJan8 -eq 50) ('linhas=' + $linhasJan8)
+
+            $selFev8 = Select-AbaMes $mainNav 1
+            Check 'clique na guia FEV ativou a guia' ($selFev8 -eq 1) (
+                'sel=' + $selFev8)
+            $linhasFev8 = Get-GridTransLinhas $mainNav
+            Check 'grade refiltrada na guia FEV 2026 = 60 linhas' (
+                $linhasFev8 -eq 60) ('linhas=' + $linhasFev8)
 
             # Com database o menu "Transacoes" volta a funcionar todo - e o
             # "Gerenciar Contas" volta a ser navegavel (e' ele o proximo passo).
@@ -2104,8 +2193,10 @@ try {
             ' ''Conta de teste'');'
         Check 'conta de destino gravada (passo [9])' (
             [Sq]::Executar($minewDb, $sqlConta) -eq 1)
+        # Total do passo [8] (extratos por mes das guias: 50+60+70 em 2026 e
+        # 80 em 2025 = 260) - a referencia da qual a importacao tem de SOMAR 9.
         $antes = [Sq]::Consultar($minewDb, 'SELECT COUNT(*) FROM extratos;')
-        Check 'extratos lido antes da importacao' ($antes -eq 150) ('qtd=' + $antes)
+        Check 'extratos lido antes da importacao' ($antes -eq 260) ('qtd=' + $antes)
 
         # Extrato OFX 1.x em SGML (tag sem fechamento, valor terminando na
         # quebra de linha) com texto UTF-8 mas cabecalho afirmando CHARSET:1252:

@@ -227,6 +227,11 @@ type
     // navegação de gestão (NavigateToTab esconde todas).
     procedure AtualizarAbasMes;
     function AbaDoMes(AMes: Integer): TTabSheet;
+    // Tradutor inverso de AbaDoMes: a guia ATIVA diz qual mês a grade de
+    // extratos mostra (1 = tbJan ... 12 = tbDez). Devolve 0 para o que não é
+    // guia de mês (as telas de gestão), onde a grade está escondida e não há
+    // mês a filtrar.
+    function MesDaAba(ATab: TTabSheet): Integer;
     // Grade de saldos da tbSaldos: mesma regra do filtro de extratos - só os
     // registros da conta escolhida no cbAccount (combo vazia não restringe).
     // É o único ponto de Open de SQLQuerySaldos: quem abre/reabre é aqui.
@@ -398,6 +403,13 @@ begin
     lblTitle.Caption := 'Gerenciamento de Saldos'
   else
     lblTitle.Caption := FSavedTitle;
+
+  // A grade mostra o mês da guia ativa (mais o ano do cbYear e a conta do
+  // cbAccount): clicar em outra guia muda a página, então refaz o filtro
+  // aqui. Só na tela de extratos - nas telas de gestão a grade está escondida
+  // e MesDaAba devolve 0; o "Voltar" refaz o filtro pelo AtualizarAbasMes.
+  if exibindoExtrato then
+    AplicarFiltroExtratos;
 
   // Por último: revelar a interface (SetInterfaceVisible mostra a
   // PageControl1) é o que a coloca no TOPO da pilha de irmãos, por cima da
@@ -653,6 +665,41 @@ begin
   end;
 end;
 
+// Tradutor inverso de AbaDoMes: a aba ATIVA é quem diz qual mês a grade de
+// extratos mostra (o pedido: ano do cbYear + mês da guia ativa). Devolve 0
+// para o que não é guia de mês - as telas de gestão, onde a grade fica
+// escondida e não há mês a filtrar. Os comparadores são objetos (TTabSheet
+// não é ordinal), então não há case aqui: a cadeia é a tradução direta.
+function TFormMoney.MesDaAba(ATab: TTabSheet): Integer;
+begin
+  if ATab = tbJan then
+    Result := 1
+  else if ATab = tbFev then
+    Result := 2
+  else if ATab = tbMar then
+    Result := 3
+  else if ATab = tbAbr then
+    Result := 4
+  else if ATab = tbMai then
+    Result := 5
+  else if ATab = tbJun then
+    Result := 6
+  else if ATab = tbJul then
+    Result := 7
+  else if ATab = tbAgo then
+    Result := 8
+  else if ATab = tbSet then
+    Result := 9
+  else if ATab = tbOut then
+    Result := 10
+  else if ATab = tbNov then
+    Result := 11
+  else if ATab = tbDez then
+    Result := 12
+  else
+    Result := 0;
+end;
+
 // As guias JAN..DEZ são o cabeçalho de navegação da tela de extratos e só
 // aparecem nos meses que têm saldo no ano do cbYear (mesma origem da lista
 // de anos: saldos.enddate). A aba ativa vai para o mês mais recente - é o
@@ -749,12 +796,20 @@ begin
   // mesmo quando a aba ativa NÃO muda (aí o OnChange não dispara e o
   // PageControl1Change não roda) - o empurrão aqui cobre esse caminho também.
   GarantirSobreposicaoNaFrente;
+
+  // Mesmo raciocínio para o FILTRO da grade: esconder a guia ativa faz o LCL
+  // procurar outra página visível lá dentro (SetTabVisible -> PageRemoved) e
+  // nem esse caminho dispara OnChange, então a aba que sobrou pode ter mudado
+  // sem o PageControl1Change rodar - e a grade mostra o mês da aba ativa.
+  // Refazer o filtro aqui, com a guia já no lugar, cobre esse caso (é
+  // redundante quando o OnChange dispara, e inofensivo: é só reabrir a query).
+  AplicarFiltroExtratos;
 end;
 
 procedure TFormMoney.AplicarFiltroExtratos;
 var
   sql, condicao: string;
-  idConta, ano: Integer;
+  idConta, ano, mes: Integer;
 begin
   // Sem database aberto não há o que filtrar: é o caminho do OnChange que a
   // limpeza das combos dispara ao fechar o arquivo.
@@ -770,13 +825,12 @@ begin
     condicao := 'account_id = ' + IntToStr(idConta);
   end;
 
-  // Período = ano: não existe seletor de mês NA GRADE (as guias JAN..DEZ
-  // são o cabeçalho da tela e marcam os meses com saldo no ano, mas não
-  // filtram - quem decide o período mostrado é o ano do cbYear).
-  // dtposted é texto ISO (YYYY-MM-DD...), então o ano são os 4
-  // primeiros caracteres — que também batem no formato OFX (YYYYMMDD...).
-  // O valor é validado como número antes de entrar na query e a comparação
-  // é contra texto, para o SQLite não trocar de tipo no meio da expressão.
+  // Período = ano + mês: o ano vem do cbYear e o mês da aba ativa (guia
+  // JAN..DEZ) - são as duas coisas que definem a tela de extratos. dtposted
+  // é texto ISO (YYYY-MM-DD...), então o ano são os 4 primeiros caracteres -
+  // que também batem no formato OFX (YYYYMMDD...). O valor é validado como
+  // número antes de entrar na query e a comparação é contra texto, para o
+  // SQLite não trocar de tipo no meio da expressão.
   if (cbYear.ItemIndex >= 0) and (cbYear.ItemIndex < cbYear.Items.Count) then
   begin
     ano := StrToIntDef(Trim(cbYear.Items[cbYear.ItemIndex]), -1);
@@ -787,6 +841,24 @@ begin
       condicao := condicao + 'substr(dtposted, 1, 4) = ' +
         QuotedStr(IntToStr(ano));
     end;
+  end;
+
+  // Mês = guia ativa (MesDaAba devolve 0 fora das guias de mês: as telas de
+  // gestão, onde a grade está escondida e não há mês a filtrar). O mês não
+  // fica na mesma posição nos dois formatos de dtposted: em YYYY-MM-DD são
+  // os caracteres 6..7 e em YYYYMMDD são os 5..6 - o '-' na posição 5 é o
+  // que separa os casos (é o mesmo critério do ExtratoDtpostedGetText, que
+  // formata a coluna da grade). O mês é comparado como texto de 2 dígitos
+  // ('01'..'12'), que é o que substr devolve.
+  mes := MesDaAba(PageControl1.ActivePage);
+  if mes > 0 then
+  begin
+    if condicao <> '' then
+      condicao := condicao + ' AND ';
+    condicao := condicao +
+      '(CASE WHEN substr(dtposted, 5, 1) = ''-'' THEN substr(dtposted, 6, 2)' +
+      ' ELSE substr(dtposted, 5, 2) END) = ' +
+      QuotedStr(Format('%.2d', [mes]));
   end;
 
   sql := 'SELECT * FROM extratos';
