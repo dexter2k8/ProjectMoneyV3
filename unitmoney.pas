@@ -218,6 +218,15 @@ type
     // A lista de anos vem de saldos.enddate (o filtro continua em dtposted).
     procedure CarregarFiltrosExtratos;
     procedure AplicarFiltroExtratos;
+    // Preenche o tsAnterior (campo do valor, ao lado do rótulo "Anterior:")
+    // com o balance do saldo IMEDIATAMENTE ANTERIOR ao mês ativo: o registro
+    // mais recente de saldos (enddate) anterior ao 1º dia desse mês, no ano
+    // do cbYear e na conta do cbAccount (mesma regra dos filtros) - zero
+    // quando não existe. Exibido como na coluna de valor da grade: "37,50 C"
+    // (crédito, cor do campo) ou "37,50 D" (débito, vermelho). Roda no fim do
+    // AplicarFiltroExtratos, que é o único ponto que muda com guia, ano,
+    // conta, abertura e importação.
+    procedure AtualizarSaldoAnterior;
     // Guias de mês da tela de extratos (1 = tbJan ... 12 = tbDez): aparecem
     // só nos meses que têm saldo no ano do cbYear, com a aba ativa no mês
     // mais recente. Roda ao carregar os filtros, ao trocar o ano e no
@@ -706,7 +715,8 @@ end;
 // que define "hoje" quando o database abre e quando o ano muda.
 procedure TFormMoney.AtualizarAbasMes;
 var
-  i, ano, mes, ultimoMes: Integer;
+  i, ano, mes, ultimoMes, mesLancado, mesAbertura: Integer;
+  condicao: string;
   temMes: array[1..12] of Boolean;
   consulta: TSQLQuery;
 begin
@@ -738,6 +748,7 @@ begin
   if (cbYear.ItemIndex >= 0) and (cbYear.ItemIndex < cbYear.Items.Count) then
     ano := StrToIntDef(Trim(cbYear.Items[cbYear.ItemIndex]), -1);
 
+  mesLancado := 0;
   if ano >= 0 then
   begin
     // Consulta própria na mesma conexão (mesmo caminho do ano do cbYear):
@@ -758,6 +769,33 @@ begin
           temMes[mes] := True;
         consulta.Next;
       end;
+      consulta.Close;
+
+      // Mês do lançamento mais recente do ano: a tela de extratos tem de
+      // ABRIR no mês em que há o que ver - o último mês com saldo podia vir
+      // sem nenhum lançamento e a grade abria vazia. Mesma conta do filtro
+      // dos extratos (combo vazia não restringe), senão um lançamento de
+      // outra conta mudaria a abertura de uma tela que não o mostra.
+      // dtposted tem dois formatos no mesmo campo (ISO "YYYY-MM-DD" e OFX
+      // "YYYYMMDD"), então o mês sai do MESMO CASE do filtro - e o ORDER BY
+      // compara o ANO-MES já normalizado: em texto puro "2025-12" vem depois
+      // de "202512", então o formatado não pode competir com o cru.
+      condicao := '';
+      if (cbAccount.ItemIndex >= 0) and
+         (cbAccount.ItemIndex < cbAccount.Items.Count) then
+        condicao := ' AND account_id = ' + IntToStr(
+          Integer(PtrInt(cbAccount.Items.Objects[cbAccount.ItemIndex])));
+      consulta.SQL.Text :=
+        'SELECT CASE WHEN substr(dtposted, 5, 1) = ''-'' THEN' +
+        ' substr(dtposted, 6, 2) ELSE substr(dtposted, 5, 2) END' +
+        ' FROM extratos WHERE substr(dtposted, 1, 4) = ' +
+        QuotedStr(IntToStr(ano)) + condicao +
+        ' ORDER BY substr(dtposted, 1, 4) ||' +
+        ' (CASE WHEN substr(dtposted, 5, 1) = ''-'' THEN substr(dtposted, 6, 2)' +
+        ' ELSE substr(dtposted, 5, 2) END) DESC LIMIT 1;';
+      consulta.Open;
+      if not consulta.EOF then
+        mesLancado := StrToIntDef(Trim(consulta.Fields[0].AsString), 0);
       consulta.Close;
     finally
       consulta.Free;
@@ -784,8 +822,16 @@ begin
     AbaDoMes(i).TabVisible := temMes[i];
   end;
 
-  if ultimoMes > 0 then
-    PageControl1.ActivePage := AbaDoMes(ultimoMes)
+  // Aba de abertura: a do mês com LANÇAMENTOS quando esse mês tem guia (o
+  // pedido - a grade tem de abrir com o que ver); sem lançamento no ano (ou
+  // com ele num mês sem saldo, que não vira guia), fica a do último mês com
+  // saldo - o comportamento de antes.
+  mesAbertura := ultimoMes;
+  if (mesLancado >= 1) and (mesLancado <= 12) and temMes[mesLancado] then
+    mesAbertura := mesLancado;
+
+  if mesAbertura > 0 then
+    PageControl1.ActivePage := AbaDoMes(mesAbertura)
   else if PageControl1.ActivePage = nil then
     // Sem saldo no ano a última guia some e o LCL deixa a página sem guia
     // ativa (FPageIndex = -1). Volta para tbJan, que é a página de entrada.
@@ -861,7 +907,17 @@ begin
       QuotedStr(Format('%.2d', [mes]));
   end;
 
-  sql := 'SELECT * FROM extratos';
+  // O * não serve por causa do "trnamt": a coluna é NUMERIC e o driver
+  // SQLite a tipa como TLargeintField, que LÊ por sqlite3_column_int64 - os
+  // centavos de um -198,50 apareciam como "198,00 D" e a GRAVAÇÃO de uma
+  // edição destruía a fração (o bind também era int64). O CAST faz o campo
+  // nascer TFloatField (leitura por sqlite3_column_double, gravação por
+  // sqlite3_bind_double) e o AS mantém o NOME da coluna - que é o que o sqldb
+  // usa para gerar o INSERT/UPDATE ("trnamt"=:"trnamt"), então a edição
+  // continua valendo para o arquivo. As demais colunas vêm nomeadas e sem
+  // CAST, iguais ao *.
+  sql := 'SELECT id, account_id, trntype, dtposted,' +
+    ' CAST(trnamt AS REAL) AS trnamt, memo, chknum FROM extratos';
   if condicao <> '' then
     sql := sql + ' WHERE ' + condicao;
   sql := sql + ' ORDER BY dtposted, id;';
@@ -872,6 +928,98 @@ begin
   SQLQueryExtratos.SQL.Text := sql;
   SQLQueryExtratos.Open;
   PrepararCamposExtratos;
+
+  // O saldo "Anterior" é da MESMA tela (ano + mês + conta que acabaram de
+  // ser aplicados), então é calculado aqui: é o único ponto que roda em
+  // todas as mudanças de guia, de ano, de conta, na abertura e na importação.
+  AtualizarSaldoAnterior;
+end;
+
+// O tsAnterior mostra o balance do saldo imediatamente anterior ao mês ativo
+// - o saldo com que o mês começa. "Imediatamente anterior" = o registro mais
+// recente de saldos ANTERIOR ao primeiro dia do mês da guia ativa (no ano do
+// cbYear, que é o que define o ano desse limite). Não havendo nenhum, o
+// pedido é exibir zero (valor inicial deste procedimento) - que aparece como
+// crédito ("0,00 C"), a mesma regra do valor da grade.
+procedure TFormMoney.AtualizarSaldoAnterior;
+var
+  consulta: TSQLQuery;
+  condicao: string;
+  idConta, ano, mes: Integer;
+  valor: Double;
+  formatos: TFormatSettings;
+begin
+  valor := 0;
+
+  mes := MesDaAba(PageControl1.ActivePage);
+  ano := -1;
+  if (cbYear.ItemIndex >= 0) and (cbYear.ItemIndex < cbYear.Items.Count) then
+    ano := StrToIntDef(Trim(cbYear.Items[cbYear.ItemIndex]), -1);
+
+  // Sem database/mês/ano válido não há o que consultar (é também o estado do
+  // fechar, onde a tela inteira já está escondida) - e vale zero.
+  if DatabaseAberto and (mes > 0) and (ano >= 0) then
+  begin
+    // Conta: mesma regra dos filtros (o combo carrega o id em Items.Objects
+    // e vazio não restringe) - o saldo tem de ser da conta que a tela
+    // mostra, senão o "Anterior" misturaria contas.
+    condicao := '';
+    if (cbAccount.ItemIndex >= 0) and (cbAccount.ItemIndex < cbAccount.Items.Count)
+    then
+    begin
+      idConta := Integer(PtrInt(cbAccount.Items.Objects[cbAccount.ItemIndex]));
+      condicao := ' AND account_id = ' + IntToStr(idConta);
+    end;
+
+    // Consulta própria na mesma conexão (mesmo caminho do ano do cbYear e
+    // das guias): não mexe no cursor de nenhuma grade.
+    consulta := TSQLQuery.Create(nil);
+    try
+      consulta.Database := SQLite3ConnContas;
+      consulta.Transaction := SQLTransactionContas;
+      // enddate é texto ISO (AAAA-MM-DD - formato que o próprio form grava),
+      // então a comparação de texto ordena por data: o limite é o 1º dia do
+      // mês ATIVO e o que vale é o registro mais recente antes dele. Em
+      // empate de data (vários saldos no mesmo mês) o desempate é pelo MAIOR
+      // id, que é AUTOINCREMENT = ordem de gravação - senão o resultado
+      // dependeria da ordem em que o SQLite devolvesse as linhas.
+      // O CAST AS REAL não é cosmético: o driver SQLite tipa "NUMERIC" (sem
+      // precisão) como TLargeintField, que LÊ por sqlite3_column_int64 - sem
+      // o CAST um balance 37,5 chegava aqui como 37 (o CAST cai em
+      // TFloatField, lido por sqlite3_column_double).
+      consulta.SQL.Text :=
+        'SELECT CAST(balance AS REAL) FROM saldos WHERE enddate < ' +
+        QuotedStr(Format('%.4d-%.2d-01', [ano, mes])) + condicao +
+        ' ORDER BY enddate DESC, id DESC LIMIT 1;';
+      consulta.Open;
+      if not consulta.EOF then
+        valor := consulta.Fields[0].AsFloat;
+      consulta.Close;
+    finally
+      consulta.Free;
+    end;
+  end;
+
+  // Mesmo par C/D da coluna de valor da grade (ExtratoTrnAmtGetText): a
+  // letra assume o papel do sinal e o valor é o absoluto, com 2 casas,
+  // vírgula e sem separador de milhar - zero conta como crédito (>= 0),
+  // a mesma regra do trnamt. A cor acompanha o sinal como na grade, MAS
+  // só o negativo é vermelho: o positivo fica na cor do próprio campo (o
+  // pedido foi "na cor atual", não o azul da grade). Os DOIS caminhos
+  // religam a cor de propósito - sem isso, depois de um mês com saldo
+  // negativo o vermelho ficaria grudado no campo.
+  formatos := DefaultFormatSettings;
+  formatos.DecimalSeparator := ',';
+  if valor >= 0 then
+  begin
+    tsAnterior.Font.Color := clDefault;
+    tsAnterior.Caption := FormatFloat('0.00', valor, formatos) + ' C';
+  end
+  else
+  begin
+    tsAnterior.Font.Color := clRed;
+    tsAnterior.Caption := FormatFloat('0.00', -valor, formatos) + ' D';
+  end;
 end;
 
 // Grade de saldos da tbSaldos: só os registros da conta escolhida no
@@ -1383,6 +1531,10 @@ begin
         cbYear.ItemIndex := indice;
       AplicarFiltroExtratos;
       AplicarFiltroSaldos;
+      // Importar também cai na tela de extratos (mesmo caminho do
+      // abrir/criar): é lá que as linhas novas aparecem. Sem navegar, quem
+      // importou de uma tela de gestão ficava lá, sem ver nada do que entrou.
+      IrParaTelaExtratos;
     except
       on E: Exception do
         if erro = '' then

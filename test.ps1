@@ -566,18 +566,23 @@ function Get-LfmTabSheets([string]$Texto) {
 # datadas do ANO e do MES informados: e' de saldos.enddate que o cbYear le a
 # lista de anos e que o PageControl1 le as guias de mes (mes com saldo =
 # guia visivel), entao o periodo gravado aqui e' o que as duas coisas tem de
-# mostrar. O arquivo tem de estar LIVRE (conexao encerrada). Devolve o TOTAL
-# de linhas de "saldos" apos o INSERT (0 = arquivo ausente/falhou - quem
-# reporta e' o chamador).
-function Add-SaldosRows([string]$Path, [int]$Count, [string]$Ano, [string]$Mes) {
+# mostrar. -Negativo grava balance NEGATIVO (-x * 1.5) e' de proposito: e' o
+# que da' um debito para o "Anterior:" exibir como "37,50 D" em vermelho (o
+# outro lado do par C/D). O arquivo tem de estar LIVRE (conexao encerrada).
+# Devolve o TOTAL de linhas de "saldos" apos o INSERT (0 = arquivo
+# ausente/falhou - quem reporta e' o chamador).
+function Add-SaldosRows([string]$Path, [int]$Count, [string]$Ano, [string]$Mes,
+    [bool]$Negativo = $false) {
     if (-not (Test-Path $Path)) { return 0 }
     # O INSERT com CTE recursivo grava tudo em uma unica sentenca. O dia '15'
     # e' de proposito: vale para qualquer mes (o que importa e' o texto, e o
     # mes e' lido por substr(enddate, 6, 2)).
+    $sinal = ' '
+    if ($Negativo) { $sinal = '-' }
     $sql = 'WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c' +
         ' WHERE x < ' + $Count + ') INSERT INTO "saldos"' +
-        " (account_id, balance, enddate) SELECT 1, x * 1.5, '" + $Ano +
-        "-" + $Mes + "-15' FROM c;"
+        " (account_id, balance, enddate) SELECT 1, x * " + $sinal + "1.5, '" +
+        $Ano + "-" + $Mes + "-15' FROM c;"
     if ([Sq]::Executar($Path, $sql) -le 0) { return 0 }
     # Le do proprio arquivo o numero de linhas que ficou: devolver o pedido sem
     # conferir esconderia um INSERT que nao deu certo.
@@ -861,8 +866,8 @@ function Get-GridTransLinhas([IntPtr]$Main) {
 # um ficou acima (o GarantirSobreposicaoNaFrente do form e' o que garante).
 function Find-AnteriorValorHwnd([IntPtr]$Main) {
     # tsAnterior e' o Static da MESMA fileira do rotulo "Anterior:", a direita
-    # dele: nao tem texto proprio (o valor ainda nao e' preenchido pelo
-    # programa), entao a pegada e' a posicao na tela.
+    # dele. O TEXTO nao serve de pegada: ele e' o VALOR calculado pelo
+    # programa (muda com a guia e com o ano), entao a casa e' a posicao.
     $lbl = [IntPtr]::Zero
     $x = -1
     $y = -1
@@ -875,12 +880,24 @@ function Find-AnteriorValorHwnd([IntPtr]$Main) {
     }
     if ($lbl -eq [IntPtr]::Zero) { return [IntPtr]::Zero }
     foreach ($w in @([UiTest]::Visible($Main))) {
-        if (($w -match '^Static \| id=(\d+) \| "" \| (\d+),(\d+) ') -and
+        if (($w -match '^Static \| id=(\d+) \| "[^"]*" \| (\d+),(\d+) ') -and
             ([int]$Matches[3] -eq $y) -and ([int]$Matches[2] -gt $x)) {
             return [IntPtr][int64]$Matches[1]
         }
     }
     return [IntPtr]::Zero
+}
+
+# Texto exibido no tsAnterior (o saldo imediatamente anterior ao mes ativo,
+# no par C/D da coluna de valor da grade: "37,50 C" credito, "37,50 D"
+# debito, "0,00 C" quando nao ha saldo anterior). '' = nao achou o campo.
+function Get-AnteriorValor([IntPtr]$Main) {
+    $h = Find-AnteriorValorHwnd $Main
+    if ($h -eq [IntPtr]::Zero) { return '' }
+    foreach ($w in @([UiTest]::Visible($Main))) {
+        if ($w -match ('\| id=' + $h + ' \| "([^"]*)"')) { return $Matches[1] }
+    }
+    return ''
 }
 
 function Check-SobreposicaoExtratos([string]$Rotulo, [IntPtr]$Main) {
@@ -1358,7 +1375,8 @@ try {
         'consulta de anos do cbYear nao vem de saldos.enddate')
     # As guias JAN..DEZ sao o cabecalho da tela de extratos e so' aparecem
     # nos meses com saldo no ano do cbYear (mes = caracteres 6..7 de
-    # enddate), com a aba ativa no mes mais recente. Os blocos sao lidos do
+    # enddate), com a aba ativa no mes mais recente COM LANCAMENTOS (e o
+    # ultimo mes com saldo como fallback). Os blocos sao lidos do
     # .pas inteiros (e nao por texto solto) para a checagem pegar o corpo do
     # procedimento certo.
     $blocoAbasMes = ''
@@ -1369,9 +1387,14 @@ try {
         ($blocoAbasMes -match 'substr\(enddate, 6, 2\) FROM saldos') -and
         ($blocoAbasMes -match 'substr\(enddate, 1, 4\) = ')) (
         'AtualizarAbasMes nao consulta os meses de saldos.enddate')
-    Check 'aba ativa vai para o mes mais recente (.pas)' (
-        $blocoAbasMes -match 'PageControl1\.ActivePage := AbaDoMes\(ultimoMes\)') (
-        'AtualizarAbasMes nao ativa o ultimo mes com saldo')
+    # A aba de abertura passou a ser a do mes com LANCAMENTOS (quando esse
+    # mes tem guia); o ultimo mes com saldo e' o FALLBACK, nao mais o alvo.
+    Check 'aba ativa vai para o mes com lancamentos (.pas)' (
+        ($blocoAbasMes -match 'mesAbertura := mesLancado') -and
+        ($blocoAbasMes -match 'temMes\[mesLancado\]') -and
+        ($blocoAbasMes -match
+            'PageControl1\.ActivePage := AbaDoMes\(mesAbertura\)')) (
+        'AtualizarAbasMes nao ativa o mes com lancamentos com fallback no saldo')
     $blocoCbYearMes = ''
     if ($pasTexto -match '(?s)procedure\s+TFormMoney\.cbYearChange.*?\nend;') {
         $blocoCbYearMes = $Matches[0]
@@ -1389,6 +1412,24 @@ try {
     Check 'cbYear abre no ano mais recente de saldos (.pas)' (
         $pasTexto -match 'ORDER BY substr\(enddate, 1, 4\) DESC') (
         'lista de anos nao vai do mais recente para o mais antigo')
+    # O "Anterior:" exibe o MESMO par C/D da coluna de valor da grade: a
+    # letra assume o papel do sinal, o valor e' o absoluto, e so' o negativo
+    # vai para o vermelho (o positivo fica na cor do campo - clDefault). A
+    # cor nao da para ler da UI (e' o Font.Color do TStaticText, aplicado no
+    # WM_CTLCOLORSTATIC do controle nativo), entao o que se confere aqui e'
+    # o corpo do AtualizarSaldoAnterior.
+    $blocoSalAnterior = ''
+    if ($pasTexto -match '(?s)procedure\s+TFormMoney\.AtualizarSaldoAnterior.*?\nend;') {
+        $blocoSalAnterior = $Matches[0]
+    }
+    Check 'tsAnterior mostra C/D com valor absoluto (.pas)' (
+        ($blocoSalAnterior -match "FormatFloat\('0\.00', valor, formatos\) \+ ' C'") -and
+        ($blocoSalAnterior -match "FormatFloat\('0\.00', -valor, formatos\) \+ ' D'")) (
+        'AtualizarSaldoAnterior nao formata o saldo anterior com o par C/D da grade')
+    Check 'tsAnterior pinta so o negativo de vermelho (.pas)' (
+        ($blocoSalAnterior -match 'tsAnterior\.Font\.Color := clRed') -and
+        ($blocoSalAnterior -match 'tsAnterior\.Font\.Color := clDefault')) (
+        'AtualizarSaldoAnterior nao colore o saldo anterior pelo sinal')
 
     # ------------------------------------------------ [2] cria o banco
     Write-Banner '[2/11] Sem banks.db -> deve criar o arquivo'
@@ -1856,20 +1897,28 @@ try {
     try {
         # Linhas de teste em "saldos" ANTES de abrir (o arquivo tem de estar
         # livre): a grade da tbSaldos so' prova que esta' ligada a tabela se
-        # houver linhas para mostrar - 150, para passar do que cabe na tela.
+        # houver linhas para mostrar - 175, para passar do que cabe na tela.
         # Os DOIS anos (2025 e 2026) tambem sao o que o cbYear tem de listar
         # (a lista vem de saldos.enddate, do mais recente para o mais
         # antigo), e os MESES decidem quais guias JAN..DEZ aparecem: 2026
-        # com saldo em JAN/FEV/MAR, 2025 so' em JAN.
-        $nSal2601 = Add-SaldosRows $minewDb 25 '2026' '01'
+        # com saldo em JAN/FEV/MAR/ABR, 2025 so' em JAN. ABR e' de PROPOSITO
+        # sem lancamento: e' o que prova que a tela abre no mes COM
+        # lancamentos (MAR), e nao no ultimo mes com saldo (ABR). JAN/2026 e'
+        # de PROPOSITO NEGATIVO (-37,50): e' o saldo que o "Anterior:" de
+        # FEV/2026 tem de exibir como "37,50 D" em vermelho - o lado do
+        # debito do par C/D que os outros meses (positivos) nao cobrem.
+        $nSal2601 = Add-SaldosRows $minewDb 25 '2026' '01' $true
         $nSal2602 = Add-SaldosRows $minewDb 25 '2026' '02'
         $nSal2603 = Add-SaldosRows $minewDb 25 '2026' '03'
+        $nSal2604 = Add-SaldosRows $minewDb 25 '2026' '04'
         $nSal2501 = Add-SaldosRows $minewDb 75 '2025' '01'
         Check 'linhas de teste gravadas em "saldos" (passo [8])' (
             ($nSal2601 -eq 25) -and ($nSal2602 -eq 50) -and
-            ($nSal2603 -eq 75) -and ($nSal2501 -eq 150)) (
+            ($nSal2603 -eq 75) -and ($nSal2604 -eq 100) -and
+            ($nSal2501 -eq 175)) (
             '2026-01=' + $nSal2601 + ' 2026-02=' + $nSal2602 +
-            ' 2026-03=' + $nSal2603 + ' 2025-01=' + $nSal2501)
+            ' 2026-03=' + $nSal2603 + ' 2026-04=' + $nSal2604 +
+            ' 2025-01=' + $nSal2501)
         # Mesma prova para a tela de extratos: linhas NOS MESES DAS GUIAS,
         # porque a grade mostra o MES da aba ativa (ano do cbYear + mes da
         # guia) - 2026 em JAN/FEV/MAR (os tres meses com saldo, que viram
@@ -1954,8 +2003,8 @@ try {
             Check 'interface revelada apos o miOpen (sem navegar)' (
                 $visAb8.Count -gt 0) ('janelas=' + $visAb8.Count)
 
-            # 150 linhas em "saldos" (75 em 2025 so' em JAN; 75 em 2026 em
-            # JAN/FEV/MAR): o combo de ano - que le a lista de saldos.enddate -
+            # 175 linhas em "saldos" (75 em 2025 so' em JAN; 100 em 2026 em
+            # JAN/FEV/MAR/ABR): o combo de ano - que le a lista de saldos.enddate -
             # tem de listar os dois anos, do mais RECENTE (2026) para o mais
             # antigo, e e' o primeiro que fica selecionado. "contas" segue
             # vazia, entao o combo de conta continua sem nenhuma linha.
@@ -1976,27 +2025,126 @@ try {
                 $nConta8 -eq 0) ('combo=' + $cbConta8 + ' itens=' + $nConta8)
 
             # ---- Guias de mes do PageControl1: so' os meses com saldo no ano
-            # selecionado aparecem (2026 tem JAN/FEV/MAR = 3 guias) e a aba
-            # ativa e' o mes mais recente - a ULTIMA guia da faixa, ja' que as
-            # guias JAN..DEZ vem em ordem crescente (a ordem das legendas esta
-            # no .lfm, checado no passo [1]; aqui so' da para contar e ler a
-            # posicao - TCM_GETITEM le ponteiro do processo do alvo).
+            # selecionado aparecem (2026 tem JAN/FEV/MAR/ABR = 4 guias) - a
+            # ordem das legendas esta no .lfm, checado no passo [1]; aqui so'
+            # da para contar e ler a posicao (TCM_GETITEM le ponteiro do
+            # processo do alvo).
             $guia8 = Find-TabHwnd $mainNav
             Check 'faixa de guias de mes encontrada (passo [8])' (
                 $guia8 -ne [IntPtr]::Zero) ('hwnd=' + $guia8)
             $nGuias8 = [UiTest]::TabCount($guia8)
-            Check 'guias de mes = meses com saldo no ano (3 em 2026)' (
-                $nGuias8 -eq 3) ('guias=' + $nGuias8)
-            Check 'aba ativa = mes mais recente (MAR = ultima guia)' (
-                ([UiTest]::TabSel($guia8) -eq ($nGuias8 - 1)) -and
-                ($nGuias8 -eq 3)) ('sel=' + [UiTest]::TabSel($guia8) +
-                ' de ' + $nGuias8)
+            Check 'guias de mes = meses com saldo no ano (4 em 2026)' (
+                $nGuias8 -eq 4) ('guias=' + $nGuias8)
+            # ... e a aba ATIVA e' o mes mais recente COM LANCAMENTOS (MAR,
+            # indice 2), nao o ultimo com saldo (ABR, indice 3): a grade tem
+            # de abrir com o que ver. Sem a regra a abertura caia em ABR e a
+            # grade abria vazia.
+            $selAb8 = [UiTest]::TabSel($guia8)
+            Check 'aba ativa = mes com lancamentos (MAR, com guia de ABR)' (
+                ($selAb8 -eq 2) -and ($nGuias8 -eq 4)) (
+                'sel=' + $selAb8 + ' de ' + $nGuias8)
             # A grade mostra o MES da aba ativa (ano + mes, e nao mais o ano
             # inteiro): na guia MAR/2026 cabem as 70 linhas de teste desse
             # mes - as de JAN/FEV ficam escondidas atras da troca de guia.
             $linhasMar8 = Get-GridTransLinhas $mainNav
             Check 'grade mostra o mes da aba ativa (MAR 2026 = 70 linhas)' (
                 $linhasMar8 -eq 70) ('linhas=' + $linhasMar8)
+            # ... e o "Anterior:" passa a ter VALOR: o saldo imediatamente
+            # anterior a MAR/2026 e' o de FEV/2026 (a fixture grava 25 linhas
+            # por mes de 2026, todas em 15, e a de maior id tem balance 37,50
+            # positivo = "37,50 C"; 2025-01 vem antes e nao desempata).
+            $valorMar8 = Get-AnteriorValor $mainNav
+            Check 'tsAnterior = saldo imediatamente anterior a MAR/2026 (37,50 C)' (
+                $valorMar8 -eq '37,50 C') ('valor=' + $valorMar8)
+
+            # ---- trnamt na GRADE: "NUMERIC" (sem precisao) o driver SQLite
+            # tipa como TLargeintField - a leitura e' int64, entao os centavos
+            # de -1,5 sumiam na exibicao ("1,00 D") e a GRAVACAO de uma
+            # edicao destruia a fracao (o bind tambem era int64). O CAST da
+            # grade (CAST(trnamt AS REAL)) faz o campo nascer TFloatField. A
+            # 1a linha de MAR/2026 tem trnamt -1,5 (fixture: -x*1,5, x=1) e o
+            # teste prova os DOIS lados: o editor da coluna Valor abre com o
+            # valor CRU - o OnGetText devolve o AsString quando DisplayText e'
+            # falso, entao a fracao ".5" e' a prova (sem o CAST o campo era
+            # TLargeintField e o texto seria "-1"); e a ida-e-volta digita
+            # -9,75, poe e confere no ARQUIVO que os centavos foram gravados.
+            $gradeTr8 = Find-GridTransHwnd $mainNav
+            Check 'grade de extratos localizada para editar o Valor (passo [8])' (
+                $gradeTr8 -ne [IntPtr]::Zero)
+            if ($gradeTr8 -ne [IntPtr]::Zero) {
+                # Teclado, nao clique (mesmo guard do passo [10]: o clique
+                # sai cedo quando a grade nao esta focada). VK_HOME poe a
+                # coluna na primeira, 3x VK_RIGHT anda ate' o Valor (Data,
+                # Descricao, Documento, Valor) e VK_F2 abre o editor - que
+                # mostra o valor CRU (DisplayText=False -> AsString).
+                $antesTr = @([UiTest]::Visible($gradeTr8))
+                [void][UiTest]::Msg($gradeTr8, 0x0100, [IntPtr]0x24, [IntPtr]::Zero)
+                [void][UiTest]::Msg($gradeTr8, 0x0101, [IntPtr]0x24, [IntPtr]::Zero)
+                for ($rTr = 0; $rTr -lt 3; $rTr++) {
+                    [void][UiTest]::Msg($gradeTr8, 0x0100, [IntPtr]0x27,
+                        [IntPtr]::Zero)                              # VK_RIGHT
+                    [void][UiTest]::Msg($gradeTr8, 0x0101, [IntPtr]0x27,
+                        [IntPtr]::Zero)
+                }
+                [void][UiTest]::Msg($gradeTr8, 0x0100, [IntPtr]0x71, [IntPtr]::Zero)
+                [void][UiTest]::Msg($gradeTr8, 0x0101, [IntPtr]0x71, [IntPtr]::Zero)
+                Start-Sleep -Milliseconds 250
+                $editorTr = [IntPtr]::Zero
+                foreach ($wEd in @([UiTest]::Visible($gradeTr8))) {
+                    if (($wEd -match '^Edit \|') -and
+                        ($antesTr -notcontains $wEd)) {
+                        $editorTr = [IntPtr][int64](
+                            [regex]::Match($wEd, 'id=(\d+)').Groups[1].Value)
+                        break
+                    }
+                }
+                $txtTr = ''
+                if ($editorTr -ne [IntPtr]::Zero) {
+                    $txtTr = [UiTest]::GetText($editorTr)
+                }
+                Write-Host ('  trnamt: editor="' + $txtTr + '"')
+                Check 'editor do Valor abre com os centavos (valor cru "-1,5")' (
+                    $txtTr -match '^-1[,.]5$') ('texto="' + $txtTr + '"')
+                if ($editorTr -ne [IntPtr]::Zero) {
+                    # EM_SETSEL marca tudo (fim -1 = seleciona ate' o fim; NAO
+                    # usar [IntPtr]::MaxValue, que o PowerShell devolve como
+                    # $null e derruba o binding do lParam) e os WM_CHAR
+                    # substituem o valor por -9,75 (CENTAVOS de proposito; o
+                    # separador e' o do Windows, o mesmo que o TFloatField usa
+                    # para ler). VK_DOWN na grade fecha o editor e POE a
+                    # mudanca (MoveSel com gfEditingDone) - VK_RIGHT nao serve:
+                    # o Valor e' a ultima coluna.
+                    [void][UiTest]::Msg($editorTr, 0x00B1, [IntPtr]::Zero,
+                        [IntPtr]-1)                            # EM_SETSEL
+                    $sepDec = [Globalization.CultureInfo]::CurrentCulture.
+                        NumberFormat.NumberDecimalSeparator
+                    foreach ($chTr in ('-9' + $sepDec + '75').ToCharArray()) {
+                        [void][UiTest]::Msg($editorTr, 0x0102,
+                            [IntPtr][Convert]::ToInt32($chTr),
+                            [IntPtr]::Zero)                           # WM_CHAR
+                    }
+                    [void][UiTest]::Msg($gradeTr8, 0x0100, [IntPtr]0x28,
+                        [IntPtr]::Zero)                              # VK_DOWN
+                    [void][UiTest]::Msg($gradeTr8, 0x0101, [IntPtr]0x28,
+                        [IntPtr]::Zero)
+                    # ESC deixa a grade em modo browse sem mexer em nada, e o
+                    # ARQUIVO e' a prova final: -9,75 exato (sem o CAST o bind
+                    # era int64 e gravaria -9). A leitura tem retry: o Post
+                    # e' assincrono em relacao a esta suite.
+                    [void][UiTest]::Msg($gradeTr8, 0x0100, [IntPtr]0x1B,
+                        [IntPtr]::Zero)                              # VK_ESCAPE
+                    [void][UiTest]::Msg($gradeTr8, 0x0101, [IntPtr]0x1B,
+                        [IntPtr]::Zero)
+                    $achouCents = 0
+                    for ($tC = 0; ($tC -lt 8) -and ($achouCents -ne 1); $tC++) {
+                        Start-Sleep -Milliseconds 250
+                        $achouCents = [Sq]::Consultar($minewDb,
+                            'SELECT COUNT(*) FROM extratos WHERE trnamt = -9.75;')
+                    }
+                    Check 'edicao do Valor gravou os centavos (-9,75 no arquivo)' (
+                        $achouCents -eq 1) ('achou=' + $achouCents)
+                }
+            }
 
             # Trocar o ano refaz a faixa: 2025 so' tem saldo em janeiro, entao
             # sobra uma guia (a de janeiro, unica do ano) e ela vira a ativa.
@@ -2020,15 +2168,25 @@ try {
             $linhasAno25 = Get-GridTransLinhas $mainNav
             Check 'grade no ano 2025 (guia JAN) = 80 linhas' (
                 $linhasAno25 -eq 80) ('linhas=' + $linhasAno25)
+            # O saldo MAIS ANTIGO da fixture e' 15/01/2025, entao antes de
+            # JAN/2025 nao ha nada: e' o caso do zero (o pedido), que conta
+            # como credito (>= 0), a mesma regra do valor da grade.
+            $valorAnt25 = Get-AnteriorValor $mainNav
+            Check 'tsAnterior = zero antes de JAN/2025 (0,00 C)' (
+                $valorAnt25 -eq '0,00 C') ('valor=' + $valorAnt25)
             # Volta para o ano inicial: os passos seguintes esperam 2026 (o
-            # mais recente) e as 3 guias dele.
+            # mais recente) e as 4 guias dele.
             [void][UiTest]::SelectCombo($cbAno8, 0)
             $nGuiasVolta = [UiTest]::TabCount((Find-TabHwnd $mainNav))
-            Check 'cbYear de volta ao ano com as 3 guias' ($nGuiasVolta -eq 3) (
+            Check 'cbYear de volta ao ano com as 4 guias' ($nGuiasVolta -eq 4) (
                 'guias=' + $nGuiasVolta)
             $linhasVolta = Get-GridTransLinhas $mainNav
             Check 'grade de volta em 2026 (guia MAR) = 70 linhas' (
                 $linhasVolta -eq 70) ('linhas=' + $linhasVolta)
+            # Voltou o ano, voltou o valor do Anterior.
+            $valorVolta = Get-AnteriorValor $mainNav
+            Check 'tsAnterior = saldo anterior a MAR/2026 ao voltar o ano (37,50 C)' (
+                $valorVolta -eq '37,50 C') ('valor=' + $valorVolta)
 
             # Clicar em OUTRA guia tem de refazer o filtro - e' o caminho do
             # usuario e o gatilho novo (o PageControl1Change chama a
@@ -2044,6 +2202,14 @@ try {
             $linhasJan8 = Get-GridTransLinhas $mainNav
             Check 'grade refiltrada na guia JAN 2026 = 50 linhas' (
                 $linhasJan8 -eq 50) ('linhas=' + $linhasJan8)
+            # Antes de JAN/2026 o saldo mais recente e' o de JAN/2025 (a
+            # fixture grava 75 linhas em 15/01/2025; a de maior id tem
+            # balance 75*1,5 = 112,50 positivo = "112,50 C") - ou seja, o
+            # Anterior PULA os meses sem saldo e vai no registro anterior
+            # mesmo.
+            $valorJan8 = Get-AnteriorValor $mainNav
+            Check 'tsAnterior = saldo imediatamente anterior a JAN/2026 (112,50 C)' (
+                $valorJan8 -eq '112,50 C') ('valor=' + $valorJan8)
 
             $selFev8 = Select-AbaMes $mainNav 1
             Check 'clique na guia FEV ativou a guia' ($selFev8 -eq 1) (
@@ -2051,6 +2217,13 @@ try {
             $linhasFev8 = Get-GridTransLinhas $mainNav
             Check 'grade refiltrada na guia FEV 2026 = 60 linhas' (
                 $linhasFev8 -eq 60) ('linhas=' + $linhasFev8)
+            # Antes de FEV/2026 o mais recente e' o de JAN/2026 - cuja
+            # fixture e' NEGATIVA de proposito (maior id = balance 25*-1,5 =
+            # -37,50), então vale o lado do DEBITO do par C/D: valor
+            # absoluto com "D" (a cor vermelha nao da para ler daqui).
+            $valorFev8 = Get-AnteriorValor $mainNav
+            Check 'tsAnterior = saldo imediatamente anterior a FEV/2026 (37,50 D)' (
+                $valorFev8 -eq '37,50 D') ('valor=' + $valorFev8)
 
             # Com database o menu "Transacoes" volta a funcionar todo - e o
             # "Gerenciar Contas" volta a ser navegavel (e' ele o proximo passo).
@@ -2095,7 +2268,7 @@ try {
                 'scroll=' + $cCom.Scroll)
 
             # ---- (c) tbSaldos: mesma navegacao/voltar da tbContas, e a grade
-            # mostra as 150 linhas injetadas em "saldos" - e' o vinculo dela
+            # mostra as 175 linhas injetadas em "saldos" - e' o vinculo dela
             # com a tabela (painel, navigator e "Voltar" junto).
             $idSal = [UiTest]::MenuId($mainNav, 'Gerenciar Saldos')
             Check 'item de menu "Gerenciar Saldos" encontrado' ($idSal -gt 0) (
@@ -2415,15 +2588,35 @@ try {
         Check 'cbYear manteve a selecao do usuario (indice 0 = 2026)' (
             $selAnoB -eq 0) ('sel=' + $selAnoB)
         # As guias de mes tambem vem de "saldos": a importacao nao mexe nelas
-        # - continuam as 3 de janeiro/fevereiro/marco de 2026.
+        # - continuam as 4 de janeiro/fevereiro/marco/abril de 2026.
         $guiaImp = Find-TabHwnd $mainImp
-        Check 'guias de mes inalteradas apos a importacao (JAN FEV MAR)' (
-            [UiTest]::TabCount($guiaImp) -eq 3) (
+        Check 'guias de mes inalteradas apos a importacao (JAN FEV MAR ABR)' (
+            [UiTest]::TabCount($guiaImp) -eq 4) (
             'guias=' + [UiTest]::TabCount($guiaImp) + ' hwnd=' + $guiaImp)
 
         # Reimportar o MESMO arquivo REPETE as linhas: registro igual e'
         # permitido (a conferencia disso e' no arquivo, no fim do passo). Os
-        # anos continuam os mesmos, ja' que a lista vem de "saldos".
+        # anos continuam os mesmos, ja' que a lista vem de "saldos". A
+        # reimportacao e' de PROPOSITO de outra tela (tbSaldos): importar tem
+        # de CAIR na tela de extratos, onde as linhas novas aparecem - sem
+        # navegar, quem importou de uma tela de gestao ficava la, sem ver
+        # nada do que entrou.
+        $idGerSal9 = [UiTest]::MenuId($mainImp, 'Gerenciar Saldos')
+        Check 'item de menu "Gerenciar Saldos" encontrado (passo [9])' (
+            $idGerSal9 -gt 0) ('id=' + $idGerSal9)
+        if ($idGerSal9 -gt 0) {
+            [void][UiTest]::Msg($mainImp, 0x0111, [IntPtr]$idGerSal9,
+                [IntPtr]::Zero)                                    # WM_COMMAND
+            # A grade de extratos so' existe na tela de extratos: espera ela
+            # sumir (a navegacao troca a pagina ativa) antes de importar.
+            $gradeSumiu = $false
+            for ($tNav = 0; ($tNav -lt 20) -and (-not $gradeSumiu); $tNav++) {
+                Start-Sleep -Milliseconds 250
+                $gradeSumiu = (Find-GridTransHwnd $mainImp) -eq [IntPtr]::Zero
+            }
+            Check 'navegou para a tbSaldos (grade de extratos escondida)' (
+                $gradeSumiu)
+        }
         $dlgImp2 = Invoke-Importar $pImp $ofxUtf8
         Check 'dialogo de resultado da reimportacao' ($dlgImp2 -ne [IntPtr]::Zero)
         if ($dlgImp2 -ne [IntPtr]::Zero) {
@@ -2431,6 +2624,15 @@ try {
             Check 'resultado da reimportacao dispensado' (
                 Wait-DialogClosed $dlgImp2)
         }
+        # O importar navega: a reimportacao partiu da tbSaldos e tem de cair
+        # na tela de extratos (a grade de volta visivel).
+        $gradeVolta = $false
+        for ($tNav2 = 0; ($tNav2 -lt 20) -and (-not $gradeVolta); $tNav2++) {
+            Start-Sleep -Milliseconds 250
+            $gradeVolta = (Find-GridTransHwnd $mainImp) -ne [IntPtr]::Zero
+        }
+        Check 'importar caiu na tela de extratos (partindo da tbSaldos)' (
+            $gradeVolta)
         $cbAnoC = Find-ComboHwnd $mainImp 100
         Check 'cbYear inalterado apos a reimportacao' (
             (Get-ComboCount $cbAnoC) -eq 2) ('itens=' + (Get-ComboCount $cbAnoC))
@@ -2553,8 +2755,8 @@ try {
                 "INSERT INTO banks (id, name, alias)" +
                 " VALUES ('001', 'Banco do Brasil', 'BB');") -eq 1)
         # Um saldo de OUTRA conta, gravado com o arquivo livre: a tbSaldos
-        # so' pode mostrar as 150 linhas da conta selecionada no combo (a
-        # 151a, de outra conta, tem de ficar de fora) - e' a prova do
+        # so' pode mostrar as 175 linhas da conta selecionada no combo (a
+        # 176a, de outra conta, tem de ficar de fora) - e' a prova do
         # filtro da grade de saldos.
         Check 'saldo de outra conta gravado (passo [10])' (
             [Sq]::Executar($minewDb,
@@ -2608,7 +2810,7 @@ try {
             # nPage = visiveis, e o GetRecordCount do TSQLQuery vem com uma
             # linha a menos - logo linhas reais = nMax - nPage + 2
             # (VScrollRows, calibrado com contagens conhecidas). Tem de dar
-            # 150 (saldos da conta do combo), nunca as 151 do arquivo.
+            # 175 (saldos da conta do combo), nunca as 176 do arquivo.
             $gradeSal = [IntPtr]::Zero
             for ($t = 0; ($t -lt 20) -and ($gradeSal -eq [IntPtr]::Zero); $t++) {
                 Start-Sleep -Milliseconds 250
@@ -2622,8 +2824,8 @@ try {
                 }
             }
             $linhasSal = [UiTest]::VScrollRows($gradeSal)
-            Check 'tbSaldos mostra so as linhas da conta do combo (150 de 151)' (
-                $linhasSal -eq 150) ('linhas=' + $linhasSal +
+            Check 'tbSaldos mostra so as linhas da conta do combo (175 de 176)' (
+                $linhasSal -eq 175) ('linhas=' + $linhasSal +
                 ' grade=' + $gradeSal)
 
             # ---- enddate em EXECUCAO: o editor da coluna da data abre com o
@@ -2983,7 +3185,7 @@ try {
     # A digitacao na grade do passo [10] so' da para conferir no arquivo com a
     # conexao encerrada (mesmo motivo do delete de contas): a mascara deixou
     # 31/03/2028 na tela do registro novo e o campo tem de ter gravado
-    # 2028-03-31 (150 da conta + 1 da outra conta + 1 digitado).
+    # 2028-03-31 (175 da conta + 1 da outra conta + 1 digitado).
     $qtdIsoSal = [Sq]::Consultar($minewDb,
         "SELECT COUNT(*) FROM saldos WHERE enddate = '2028-03-31';")
     Check 'enddate digitado na grade gravado em AAAA-MM-DD (passo [10])' (
@@ -2991,7 +3193,7 @@ try {
         'editou=' + $editouData + ' qtd=' + $qtdIsoSal)
     $qtdSalTot = [Sq]::Consultar($minewDb, 'SELECT COUNT(*) FROM saldos;')
     Check 'linha digitada na grade entrou em saldos (passo [10])' (
-        $qtdSalTot -eq 152) ('qtd=' + $qtdSalTot)
+        $qtdSalTot -eq 177) ('qtd=' + $qtdSalTot)
     # O saldo digitado na coluna balance tem de ter ido junto com a data:
     # balance e' NOT NULL, entao sem ele o Post do VK_UP nao grava nada (e'
     # por isso que o registro novo do teste leva saldo + data).
