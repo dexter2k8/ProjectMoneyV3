@@ -164,6 +164,19 @@ type
     // erro de constraint); texto que não seja uma data válida não mexe no
     // valor, como no banco de tbBancos.
     procedure SaldosEnddateSetText(Sender: TField; const AText: string);
+    // balance da tbSaldos: DUAS casas sempre, com vírgula e com o sinal na
+    // frente - "20,00" para positivo e "-20,00" para negativo. É numerico,
+    // sem o par C/D da grade de extratos: ali a letra assume o papel do
+    // sinal da coluna de valor, aqui o próprio sinal é o crédito/débito.
+    // DisplayText=False devolve o valor cru, que é o que o editor da grade
+    // abre para editar (mesma regra do trnamt).
+    procedure SaldosBalanceGetText(Sender: TField; var AText: string;
+      DisplayText: Boolean);
+    // O que o usuário digita: aceita os DOIS separadores (vírgula, o que a
+    // grade exibe e o que o editor dela deixa digitar, e ponto, o formato
+    // do arquivo e do SQL) e grava o MESMO número - 19,9 e 19.9 ficam 19,90
+    // na grade, 20 fica 20,00. Texto que não é número não mexe no valor.
+    procedure SaldosBalanceSetText(Sender: TField; const AText: string);
     // Liga os handlers de banco (OnGetText/OnSetText) a cada Open da query de
     // contas: os campos são dinâmicos e cada Open os recria sem handlers —
     // o mesmo problema, e a mesma solução, dos extratos (PrepararCamposExtratos).
@@ -1140,7 +1153,18 @@ begin
     condicao := ' WHERE account_id = ' + IntToStr(idConta);
   end;
 
-  sql := 'SELECT * FROM saldos' + condicao + ';';
+  // O CAST do balance é o mesmo motivo do CAST do trnamt na grade de
+  // extratos: "NUMERIC" sem precisão o driver SQLite tipa como
+  // TLargeintField, que LÊ por sqlite3_column_int64 - os centavos de um
+  // 19,90 sumiam na exibição e a GRAVAÇÃO de uma edição destruía a fração
+  // (o bind também era int64, e "19.9" virava "19"). O CAST faz o campo
+  // nascer TFloatField (leitura por sqlite3_column_double, gravação por
+  // sqlite3_bind_double) e o AS mantém o NOME da coluna - que é o que o
+  // sqldb usa para gerar o INSERT/UPDATE ("balance"=:"balance"), então a
+  // edição continua valendo para o arquivo. As demais colunas vêm
+  // nomeadas e sem CAST, iguais ao *.
+  sql := 'SELECT id, account_id, CAST(balance AS REAL) AS balance, enddate' +
+    ' FROM saldos' + condicao + ';';
 
   // Mesmo caminho do filtro de extratos: só dá para trocar o SQL com a query
   // fechada, então fecha, reescreve e reabre.
@@ -1463,14 +1487,69 @@ begin
     Sender.AsString := FormatDateTime('yyyy-mm-dd', dataGravada);
 end;
 
-// Liga a máscara de data e os handlers de enddate logo depois de cada Open:
-// os campos são dinâmicos (FieldDefs vazio) e cada abertura os recria - mesmo
-// problema, mesma solução, dos extratos e do bankid das contas. A máscara
-// "!99/00/0000;1;_" fixa as posições pela esquerda, aceita só dígito nas 8
-// casas, insere as duas barras sozinha e, pelo "1" do segundo campo, devolve
-// o texto COM as barras ao campo (é o que o OnSetText espera ler).
+// balance é numérico: DUAS casas sempre, vírgula e o sinal na frente -
+// "20,00" para positivo e "-20,00" para negativo. A grade de saldos não tem
+// o par C/D da grade de extratos (ali a letra assume o papel do sinal da
+// coluna de valor); aqui o próprio sinal conta crédito/débito, que é
+// também como o arquivo guarda. DisplayText=False devolve o valor cru, que
+// é o que o editor da grade abre - o gravado não muda com a formatação.
+procedure TFormMoney.SaldosBalanceGetText(Sender: TField; var AText: string;
+  DisplayText: Boolean);
+var
+  formatos: TFormatSettings;
+begin
+  if not DisplayText then
+  begin
+    AText := Sender.AsString;
+    Exit;
+  end;
+  if Sender.IsNull then
+  begin
+    AText := '';
+    Exit;
+  end;
+  formatos := DefaultFormatSettings;
+  formatos.DecimalSeparator := ',';
+  AText := FormatFloat('0.00', Sender.AsFloat, formatos);
+end;
+
+// Gravação da célula: o DBGrid faz Field.Text := texto do editor e o
+// SetEditText do campo vem parar aqui (mesmo caminho do enddate). Aceita os
+// DOIS separadores - "19,9", o que a grade exibe e o que o editor da grade
+// deixa digitar (o separador do Windows), e "19.9", o formato do arquivo e
+// do SQL - trocando a vírgula por ponto e lendo com separador FIXO, que não
+// depende do formato do sistema. "20" e "19,90" gravam o MESMO número que a
+// grade mostra com duas casas. Texto vazio ou que não seja número não mexe
+// no valor, como no banco de tbBancos (balance é NOT NULL, então vazio não
+// pode virar NULL).
+procedure TFormMoney.SaldosBalanceSetText(Sender: TField; const AText: string);
+var
+  formatos: TFormatSettings;
+  texto: string;
+  valor: Double;
+begin
+  texto := Trim(AText);
+  if texto = '' then
+    Exit;
+  texto := StringReplace(texto, ',', '.', []);
+  formatos := DefaultFormatSettings;
+  formatos.DecimalSeparator := '.';
+  formatos.ThousandSeparator := #0;
+  if TryStrToFloat(texto, valor, formatos) then
+    Sender.AsFloat := valor;
+end;
+
+// Liga máscara de data e os handlers de enddate E de balance logo depois de
+// cada Open: os campos são dinâmicos (FieldDefs vazio) e cada abertura os
+// recria - mesmo problema, mesma solução, dos extratos e do bankid das
+// contas. A máscara "!99/00/0000;1;_" fixa as posições pela esquerda, aceita
+// só dígito nas 8 casas, insere as duas barras sozinha e, pelo "1" do
+// segundo campo, devolve o texto COM as barras ao campo (é o que o
+// OnSetText espera ler).
 procedure TFormMoney.PrepararCamposSaldos;
 begin
+  SQLQuerySaldos.FieldByName('balance').OnGetText := @SaldosBalanceGetText;
+  SQLQuerySaldos.FieldByName('balance').OnSetText := @SaldosBalanceSetText;
   SQLQuerySaldos.FieldByName('enddate').OnGetText := @SaldosEnddateGetText;
   SQLQuerySaldos.FieldByName('enddate').OnSetText := @SaldosEnddateSetText;
   SQLQuerySaldos.FieldByName('enddate').EditMask := '!99/00/0000;1;_';

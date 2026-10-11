@@ -1310,6 +1310,21 @@ try {
     }
     Check 'gridSaldos esconde id e account_id e mostra balance e enddate (.lfm)' (
         $ordemSaldos) $detSaldos
+    # Rotulos da tbSaldos: o MESMO vinculo (campo, rotulo) lido POR ITEM do
+    # Columns, no formato das outras grades - e' o vinculo dentro do item que
+    # prova que "Saldo" e "Data" sao dos campos certos (e nao texto solto no
+    # bloco). Os rotulos vem dos nomes de coluna do banco (balance/enddate);
+    # o que muda e' o que o usuario ve na cabeca da grade.
+    $esperadoSaldos = @(
+        @('balance', 'Saldo'), @('enddate', 'Data'))
+    $detTitulosSal = $detSaldos
+    $titulosSalOk = $false
+    if ($blocoSaldos -ne '') {
+        $detTitulosSal = Test-LfmLabels (Get-LfmColumns $blocoSaldos) $esperadoSaldos
+        $titulosSalOk = ($detTitulosSal -eq $null)
+    }
+    Check 'gridSaldos rotula as colunas (Saldo, Data) (.lfm)' (
+        $titulosSalOk) $detTitulosSal
     # Conta escolhida no cbAccount: filtra a query de saldos (mesmo caminho
     # do filtro de extratos - Close, SQL.Text, Open) e preenche o registro
     # novo (a coluna account_id sumiu da grade, entao so' o OnNewRecord
@@ -1321,7 +1336,8 @@ try {
         'OnNewRecord = SQLQuerySaldosNewRecord ausente na query de saldos')
     Check 'saldos filtrados pela conta do cbAccount (.pas)' (
         ($pasTexto -match 'procedure\s+TFormMoney\.AplicarFiltroSaldos') -and
-        ($pasTexto -match 'SELECT \* FROM saldos') -and
+        ($pasTexto -match 'CAST\(balance AS REAL\) AS balance') -and
+        ($pasTexto -match 'FROM saldos') -and
         ($pasTexto -match 'WHERE account_id = ')) (
         'AplicarFiltroSaldos e/ou o filtro por account_id ausentes')
     Check 'OnNewRecord de saldos declarado e implementado (.pas)' (
@@ -1352,6 +1368,30 @@ try {
         ($blocoSetS -ne '') -and
         $blocoSetS.Contains("FormatDateTime('yyyy-mm-dd'")) (
         'SaldosEnddateSetText ausente ou sem a conversao DD/MM/AAAA -> AAAA-MM-DD')
+    # balance: numerico com DUAS casas e o sinal na frente ("20,00" e
+    # "-20,00" - sem o par C/D da grade de extratos) e edicao que aceita os
+    # DOIS separadores. Mesma forma das pecas do enddate: os blocos sao
+    # lidos do .pas inteiros, para a checagem pegar o corpo certo.
+    $blocoBalGet = ''
+    if ($pasTexto -match '(?s)procedure\s+TFormMoney\.SaldosBalanceGetText.*?\nend;') {
+        $blocoBalGet = $Matches[0]
+    }
+    $blocoBalSet = ''
+    if ($pasTexto -match '(?s)procedure\s+TFormMoney\.SaldosBalanceSetText.*?\nend;') {
+        $blocoBalSet = $Matches[0]
+    }
+    Check 'balance da tbSaldos exibido com duas casas e o sinal (.pas)' (
+        ($blocoBalGet -ne '') -and
+        $blocoBalGet.Contains(
+            "FormatFloat('0.00', Sender.AsFloat, formatos)") -and
+        (-not $blocoBalGet.Contains("' C'")) -and
+        (-not $blocoBalGet.Contains("' D'"))) (
+        'SaldosBalanceGetText ausente ou sem o formato 0.00 com sinal')
+    Check 'balance da tbSaldos aceita virgula e ponto na edicao (.pas)' (
+        ($blocoBalSet -ne '') -and
+        $blocoBalSet.Contains("StringReplace(texto, ',', '.', [])") -and
+        $blocoBalSet.Contains('Sender.AsFloat := valor')) (
+        'SaldosBalanceSetText ausente ou sem a troca de virgula por ponto')
     # A mascara so' vale se for religada depois de cada Open (os campos sao
     # dinamicos e a query de saldos so' abre em AplicarFiltroSaldos).
     $blocoPrepS = ''
@@ -1362,10 +1402,12 @@ try {
     if ($pasTexto -match '(?s)procedure\s+TFormMoney\.AplicarFiltroSaldos.*?\nend;') {
         $blocoFiltroS = $Matches[0]
     }
-    Check 'mascara de data e handlers do enddate religados a cada Open (.pas)' (
+    Check 'mascara de data e handlers de enddate e balance religados a cada Open (.pas)' (
         ($blocoPrepS -ne '') -and
         $blocoPrepS.Contains('OnGetText := @SaldosEnddateGetText') -and
         $blocoPrepS.Contains('OnSetText := @SaldosEnddateSetText') -and
+        $blocoPrepS.Contains('OnGetText := @SaldosBalanceGetText') -and
+        $blocoPrepS.Contains('OnSetText := @SaldosBalanceSetText') -and
         $blocoPrepS.Contains("EditMask := '!99/00/0000;1;_'") -and
         ($blocoFiltroS -ne '') -and
         $blocoFiltroS.Contains('PrepararCamposSaldos')) (
@@ -3137,10 +3179,22 @@ try {
                             Start-Sleep -Milliseconds 250
                             return [UiTest]::GetText($ed)
                         }
-                        $txtSaldo = Invoke-GridType $gradeSal '10'
+                        # Sepador decimal do WINDOWS, o mesmo que o editor da
+                        # grade aceita (o '.' e' recusado pelo editor - e' por
+                        # isso que a edicao do Valor do passo [8] tambem usa o
+                        # sepDec). O pedido foi digitar 19,9 e ver 19,90: o
+                        # valor tem de ir para o arquivo como 19.9, com os
+                        # centavos intactos. Com o SELECT * antigo o campo
+                        # nasce inteiro e 19,9 gravava 19 - e' o CAST da query
+                        # que segura a fracao. O OnSetText aceita o ponto
+                        # tambem (texto colado), que e' o conferido estatico.
+                        $sepDecSal = [Globalization.CultureInfo]::CurrentCulture.
+                            NumberFormat.NumberDecimalSeparator
+                        $saldoNovo = '19' + $sepDecSal + '9'
+                        $txtSaldo = Invoke-GridType $gradeSal $saldoNovo
                         Write-Host ('  balance: digitado="' + $txtSaldo + '"')
                         Check 'saldo digitado no registro novo (passo [10])' (
-                            $txtSaldo -eq '10') ('texto="' + $txtSaldo + '"')
+                            $txtSaldo -eq $saldoNovo) ('texto="' + $txtSaldo + '"')
                         [void][UiTest]::Msg($gradeSal, 0x0100, [IntPtr]0x27,
                             [IntPtr]::Zero)                      # VK_RIGHT
                         [void][UiTest]::Msg($gradeSal, 0x0101, [IntPtr]0x27,
@@ -3344,10 +3398,15 @@ try {
         $qtdSalTot -eq 179) ('qtd=' + $qtdSalTot)
     # O saldo digitado na coluna balance tem de ter ido junto com a data:
     # balance e' NOT NULL, entao sem ele o Post do VK_UP nao grava nada (e'
-    # por isso que o registro novo do teste leva saldo + data).
+    # por isso que o registro novo do teste leva saldo + data). O valor
+    # conferido e' 19.9 - o MESMO numero digitado na grade, com os centavos
+    # intactos: e' a prova de que a fracao sobreviveu do editor ao arquivo
+    # (com o SELECT * antigo o campo nasce inteiro e 19,9 gravava 19). A
+    # grade mostra o mesmo numero como 19,90, que e' o conferido estatico
+    # no .pas (FormatFloat '0.00' do SaldosBalanceGetText).
     $qtdSalSaldo = [Sq]::Consultar($minewDb,
         "SELECT COUNT(*) FROM saldos WHERE enddate = '2028-03-31'" +
-        " AND balance = 10;")
+        ' AND ABS(balance - 19.9) < 0.001;')
     Check 'saldo digitado gravado junto com a data (passo [10])' (
         $qtdSalSaldo -eq 1) ('qtd=' + $qtdSalSaldo)
     # Nenhum enddate pode ter virado lixo no meio da edicao (o formato do

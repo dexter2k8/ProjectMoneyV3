@@ -266,12 +266,12 @@ object FormMoney: TFormMoney
         Color = clWindow
         Columns = <        
           item
-            Title.Caption = 'balance'
+            Title.Caption = 'Saldo'
             Width = 273
             FieldName = 'balance'
           end        
           item
-            Title.Caption = 'enddate'
+            Title.Caption = 'Data'
             Width = 273
             FieldName = 'enddate'
           end>
