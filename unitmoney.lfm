@@ -256,7 +256,7 @@ object FormMoney: TFormMoney
       ClientHeight = 444
       ClientWidth = 852
       TabVisible = False
-      object gridSaldos: TMoneyGrid
+      object gridSaldos: TDBGrid
         Left = 0
         Height = 394
         Top = 0

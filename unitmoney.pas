@@ -6,25 +6,17 @@ interface
 
 uses
   Classes, SysUtils, SQLite3Conn, SQLDB, Forms, Controls, Graphics, Dialogs,
-  ComCtrls, ExtCtrls, StdCtrls, Menus, DB, Grids, DBGrids, DBCtrls, Buttons,
-  LCLType;
+  ComCtrls, ExtCtrls, StdCtrls, Menus, DB, Grids, DBGrids, DBCtrls, Buttons;
 
 type
 
-  { TMoneyGrid }
-
-  // TDBGrid que também aceita digitação em campos ftMemo. Os TEXT do SQLite
-  // viram ftMemo no driver (e ftMemo é blob para a grade): a TDBGrid de base
-  // só entrega a tecla ao editor se dgDisplayMemoText estiver ligado - mas,
-  // com a opção ligada, a célula lê o texto cru do campo e ignora o OnGetText
-  // que formata (DD/MM/AAAA no fim da tbSaldos). Sem a opção a formatação
-  // funciona e a digitação some; aqui vale a validação da base só sem essa
-  // trava de blob, então a coluna de enddate (máscara !99/00/0000) edita e o
-  // OnSetText continua gravando AAAA-MM-DD.
-  TMoneyGrid = class(TDBGrid)
-  protected
-    function EditorCanAcceptKey(const Ch: TUTF8Char): boolean; override;
-  end;
+  // gridSaldos é uma TDBGrid de base mesmo, e não um descendente próprio: o
+  // Lazarus só resolve objeto de .lfm pela paleta, por designer base ou por
+  // GetClass, e classe declarada num unit do projeto não é nenhuma das três -
+  // o IDE para em "incapaz de localizar a classe do componente" (e o fallback
+  // para o ancestral registrado, TDBGrid, é desligado no caminho de classe
+  // aninhada). O que se queria no descendente era só digitar em enddate; ver
+  // o CAST que faz o campo nascer ftString em AplicarFiltroSaldos.
 
   { TFormMoney }
 
@@ -36,7 +28,7 @@ type
     DBNavTrans: TDBNavigator;
     DBNavSaldos: TDBNavigator;
     gridContas: TDBGrid;
-    gridSaldos: TMoneyGrid;
+    gridSaldos: TDBGrid;
     gridTrans: TDBGrid;
     gridBancos: TDBGrid;
     lblTitle: TLabel;
@@ -328,26 +320,6 @@ uses
   unitDatabase, unitOfx;
 
 {$R *.lfm}
-
-{ TMoneyGrid }
-
-// Mesmo critério da TDBGrid.EditorCanAcceptKey, pulando só a exigência de
-// blob: campo ftMemo com OnGetText (o caso do enddate) é editável como texto
-// comum - a formatação da célula é do OnGetText, não do dgDisplayMemoText.
-function TMoneyGrid.EditorCanAcceptKey(const Ch: TUTF8Char): boolean;
-var
-  campo: TField;
-begin
-  Result := inherited EditorCanAcceptKey(Ch);
-  if Result or (Ch = '') then
-    Exit;
-  campo := SelectedField;
-  if (campo = nil) or (campo.DataType <> ftMemo) or campo.Calculated or
-     (campo.FieldKind = fkLookup) then
-    Exit;
-  // IsValidChar é o mesmo da base: dígito, barra ou backspace, byte a byte.
-  Result := IsValidChar(campo, Ch);
-end;
 
 { TFormMoney }
 
@@ -1071,29 +1043,30 @@ begin
 end;
 
 // Mesmo par C/D da coluna de valor da grade (ExtratoTrnAmtGetText): a letra
-// assume o papel do sinal e o valor é o absoluto, com 2 casas, vírgula e sem
-// separador de milhar - zero conta como crédito (>= 0), a mesma regra do
-// trnamt. A cor acompanha o sinal como na grade, MAS só o negativo é
-// vermelho: o positivo fica na cor do próprio campo (o pedido foi "na cor
-// atual", não o azul da grade). Os DOIS caminhos religam a cor de propósito
-// - sem isso, depois de um saldo negativo o vermelho ficaria grudado no
-// campo. Campo é TControl porque os dois exibidores são disso para baixo: o
-// tsAnterior (TStaticText) e o txtSaldo (TLabel).
+// assume o papel do sinal e o valor é o absoluto, com 2 casas, vírgula
+// decimal e separador de milhar no ponto - zero conta como crédito (>= 0), a
+// mesma regra do trnamt. A cor acompanha o sinal como na grade, MAS só o
+// negativo é vermelho: o positivo fica na cor do próprio campo (o pedido foi
+// "na cor atual", não o azul da grade). Os DOIS caminhos religam a cor de
+// propósito - sem isso, depois de um saldo negativo o vermelho ficaria
+// grudado no campo. Campo é TControl porque os dois exibidores são disso
+// para baixo: o tsAnterior (TStaticText) e o txtSaldo (TLabel).
 procedure TFormMoney.ExibirSaldo(Campo: TControl; valor: Double);
 var
   formatos: TFormatSettings;
 begin
   formatos := DefaultFormatSettings;
   formatos.DecimalSeparator := ',';
+  formatos.ThousandSeparator := '.';
   if valor >= 0 then
   begin
     Campo.Font.Color := clDefault;
-    Campo.Caption := FormatFloat('0.00', valor, formatos) + ' C';
+    Campo.Caption := FormatFloat('#,##0.00', valor, formatos) + ' C';
   end
   else
   begin
     Campo.Font.Color := clRed;
-    Campo.Caption := FormatFloat('0.00', -valor, formatos) + ' D';
+    Campo.Caption := FormatFloat('#,##0.00', -valor, formatos) + ' D';
   end;
 end;
 
@@ -1168,10 +1141,17 @@ begin
   // nascer TFloatField (leitura por sqlite3_column_double, gravação por
   // sqlite3_bind_double) e o AS mantém o NOME da coluna - que é o que o
   // sqldb usa para gerar o INSERT/UPDATE ("balance"=:"balance"), então a
-  // edição continua valendo para o arquivo. As demais colunas vêm
-  // nomeadas e sem CAST, iguais ao *.
-  sql := 'SELECT id, account_id, CAST(balance AS REAL) AS balance, enddate' +
-    ' FROM saldos' + condicao + ';';
+  // edição continua valendo para o arquivo.
+  // O CAST do enddate é o mesmo truque com outro tipo: "TEXT" o driver tipa
+  // como ftMemo, que é BLOB para a TDBGrid - e a grade só entrega a tecla ao
+  // editor de blob com dgDisplayMemoText, opção que lê o texto cru do campo
+  // e IGNORA o OnGetText que mostra DD/MM/AAAA. CAST AS VARCHAR faz o campo
+  // nascer TStringField (não blob): a TDBGrid de base aceita a digitação, o
+  // EditMask !99/00/0000 continua casando e o OnSetText grava AAAA-MM-DD -
+  // e o AS mantém o nome, então a edição segue gravando no arquivo. As
+  // demais colunas (id, account_id) vêm sem CAST.
+  sql := 'SELECT id, account_id, CAST(balance AS REAL) AS balance, ' +
+    'CAST(enddate AS VARCHAR) AS enddate FROM saldos' + condicao + ';';
 
   // Mesmo caminho do filtro de extratos: só dá para trocar o SQL com a query
   // fechada, então fecha, reescreve e reabre.
@@ -1217,10 +1197,11 @@ begin
 end;
 
 // trnamt e saldo viram "20,00 C" (crédito) ou "20,00 D" (débito): a letra
-// assume o papel do sinal e o valor é o absoluto, com 2 casas e vírgula.
-// Serve as DUAS colunas porque lê tudo pelo Sender. O editor da grade lê o
-// valor cru (DisplayText=False), então o gravado não muda - no saldo não há
-// editor, que é justamente o ReadOnly do PrepararCamposExtratos.
+// assume o papel do sinal e o valor é o absoluto, com 2 casas, vírgula
+// decimal e separador de milhar no ponto ("1.234,56 C"). Serve as DUAS
+// colunas porque lê tudo pelo Sender. O editor da grade lê o valor cru
+// (DisplayText=False), então a máscara não muda o que se digita - no saldo
+// não há editor, que é justamente o ReadOnly do PrepararCamposExtratos.
 procedure TFormMoney.ExtratoTrnAmtGetText(Sender: TField; var AText: string;
   DisplayText: Boolean);
 var
@@ -1240,10 +1221,11 @@ begin
   valor := Sender.AsFloat;
   formatos := DefaultFormatSettings;
   formatos.DecimalSeparator := ',';
+  formatos.ThousandSeparator := '.';
   if valor >= 0 then
-    AText := FormatFloat('0.00', valor, formatos) + ' C'
+    AText := FormatFloat('#,##0.00', valor, formatos) + ' C'
   else
-    AText := FormatFloat('0.00', -valor, formatos) + ' D';
+    AText := FormatFloat('#,##0.00', -valor, formatos) + ' D';
 end;
 
 // Mostra o nome do banco no lugar do id, tanto na exibição (DisplayText=True)
@@ -1494,12 +1476,13 @@ begin
     Sender.AsString := FormatDateTime('yyyy-mm-dd', dataGravada);
 end;
 
-// balance é numérico: DUAS casas sempre, vírgula e o sinal na frente -
-// "20,00" para positivo e "-20,00" para negativo. A grade de saldos não tem
-// o par C/D da grade de extratos (ali a letra assume o papel do sinal da
-// coluna de valor); aqui o próprio sinal conta crédito/débito, que é
-// também como o arquivo guarda. DisplayText=False devolve o valor cru, que
-// é o que o editor da grade abre - o gravado não muda com a formatação.
+// balance é numérico: DUAS casas sempre, vírgula decimal, separador de milhar
+// no ponto e o sinal na frente - "20,00" para positivo, "-20,00" para
+// negativo e "-1.234,50" no milhar. A grade de saldos não tem o par C/D da
+// grade de extratos (ali a letra assume o papel do sinal da coluna de
+// valor); aqui o próprio sinal conta crédito/débito, que é também como o
+// arquivo guarda. DisplayText=False devolve o valor cru, que é o que o
+// editor da grade abre - o gravado não muda com a formatação.
 procedure TFormMoney.SaldosBalanceGetText(Sender: TField; var AText: string;
   DisplayText: Boolean);
 var
@@ -1517,7 +1500,8 @@ begin
   end;
   formatos := DefaultFormatSettings;
   formatos.DecimalSeparator := ',';
-  AText := FormatFloat('0.00', Sender.AsFloat, formatos);
+  formatos.ThousandSeparator := '.';
+  AText := FormatFloat('#,##0.00', Sender.AsFloat, formatos);
 end;
 
 // Gravação da célula: o DBGrid faz Field.Text := texto do editor e o

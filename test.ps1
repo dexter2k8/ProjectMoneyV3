@@ -1139,7 +1139,7 @@ try {
     # exibicao vem do OnGetText (DD/MM/AAAA), entao o dgDisplayMemoText tem de
     # estar fora - com ele ligado o editor receberia o ISO cru e a mascara
     # (!99/00/0000) nao casaria.
-    $blocoGradeS = Get-LfmBlock $lfmTexto 'gridSaldos: TMoneyGrid'
+    $blocoGradeS = Get-LfmBlock $lfmTexto 'gridSaldos: TDBGrid'
     $detMemoS = 'bloco gridSaldos nao encontrado no .lfm'
     if ($blocoGradeS -ne '') {
         $detMemoS = 'dgDisplayMemoText no bloco gridSaldos quebra a formatacao'
@@ -1191,17 +1191,26 @@ try {
     $pasPath = Join-Path $root 'unitmoney.pas'
     if (Test-Path $pasPath) { $pasTexto = [IO.File]::ReadAllText($pasPath) }
     Check 'unitmoney.pas lido' ($pasTexto -ne '') $pasPath
-    # gridSaldos e' TMoneyGrid (subclasse com EditorCanAcceptKey proprio):
-    # a TDBGrid de base so' entrega a tecla ao editor em campo ftMemo (enddate
-    # e TEXT no SQLite) quando dgDisplayMemoText esta' ligado - e essa opcao
-    # tem de ficar fora porque a celula se formata pelo OnGetText (DD/MM/AAAA).
-    # Sem o override a digitacao da data some sem erro nenhum.
-    $gridClasseOk = $pasTexto.Contains('gridSaldos: TMoneyGrid;') -and
-        $pasTexto.Contains('TMoneyGrid = class(TDBGrid)') -and
-        ($pasTexto -match 'function TMoneyGrid\.EditorCanAcceptKey')
-    Check 'gridSaldos editavel: TMoneyGrid com EditorCanAcceptKey (.pas)' (
-        $gridClasseOk) ('TMoneyGrid/EditorCanAcceptKey ausente no ' +
-        'unitmoney.pas (digitacao em ftMemo recusada)')
+    # gridSaldos e' uma TDBGrid de BASE, sem descendente proprio. Um descendente
+    # declarado neste unit nao da certo: o Lazarus so' resolve objeto de .lfm
+    # pela paleta, por designer base ou por GetClass, e classe de projeto nao e'
+    # nenhuma das tres - o IDE para em "incapaz de localizar a classe do
+    # componente" (e o fallback para o ancestral registrado e' desligado no
+    # caminho de classe aninhada). O que o descendente fazia era so' entregar a
+    # tecla em campo ftMemo: a TDBGrid de base so' faz isso com
+    # dgDisplayMemoText ligado, opcao que ignora o OnGetText (DD/MM/AAAA).
+    # Sem descendente, o que garante a digitacao e o CAST do enddate - que faz
+    # o campo nascer ftString (nao blob) ja que o TEXT do SQLite nasce ftMemo.
+    Check 'gridSaldos e TDBGrid de base, sem descendente (.pas)' (
+        $pasTexto.Contains('gridSaldos: TDBGrid;') -and
+        (-not ($pasTexto -match 'class\s*\(\s*TDBGrid\s*\)'))) (
+        'gridSaldos nao e TDBGrid de base (ou sobrou um descendente no ' +
+        'unitmoney.pas, que o IDE nao acha)')
+    Check 'enddate da tbSaldos nasce ftString: CAST VARCHAR no SELECT (.pas)' (
+        $pasTexto -match
+            'CAST\(enddate AS VARCHAR\) AS enddate FROM saldos') (
+        'AplicarFiltroSaldos nao faz CAST(enddate AS VARCHAR): o campo vira ' +
+        'ftMemo (blob) e a TDBGrid recusa a digitacao da data')
     $faltaHandler = ''
     foreach ($ligacao in @(
         'dtposted=ExtratoDtpostedGetText',
@@ -1317,7 +1326,7 @@ try {
     # da conta escolhida no cbAccount, entao a conta que filtra nao aparece
     # (o registro novo recebe a conta pelo OnNewRecord da query). Seguem id
     # escondido e as 2 colunas restantes com largura igual entre si.
-    $blocoSaldos = Get-LfmBlock $lfmTexto 'gridSaldos: TMoneyGrid'
+    $blocoSaldos = Get-LfmBlock $lfmTexto 'gridSaldos: TDBGrid'
     $ordemSaldos = $false
     $detSaldos = 'bloco gridSaldos nao encontrado no .lfm'
     if ($blocoSaldos -ne '') {
@@ -1404,10 +1413,11 @@ try {
         ($blocoSetS -ne '') -and
         $blocoSetS.Contains("FormatDateTime('yyyy-mm-dd'")) (
         'SaldosEnddateSetText ausente ou sem a conversao DD/MM/AAAA -> AAAA-MM-DD')
-    # balance: numerico com DUAS casas e o sinal na frente ("20,00" e
-    # "-20,00" - sem o par C/D da grade de extratos) e edicao que aceita os
-    # DOIS separadores. Mesma forma das pecas do enddate: os blocos sao
-    # lidos do .pas inteiros, para a checagem pegar o corpo certo.
+    # balance: numerico com DUAS casas, separador de milhar no ponto e o sinal
+    # na frente ("20,00", "-20,00" e "-1.234,50" - sem o par C/D da grade de
+    # extratos) e edicao que aceita os DOIS separadores. Mesma forma das pecas
+    # do enddate: os blocos sao lidos do .pas inteiros, para a checagem pegar
+    # o corpo certo.
     $blocoBalGet = ''
     if ($pasTexto -match '(?s)procedure\s+TFormMoney\.SaldosBalanceGetText.*?\nend;') {
         $blocoBalGet = $Matches[0]
@@ -1416,13 +1426,14 @@ try {
     if ($pasTexto -match '(?s)procedure\s+TFormMoney\.SaldosBalanceSetText.*?\nend;') {
         $blocoBalSet = $Matches[0]
     }
-    Check 'balance da tbSaldos exibido com duas casas e o sinal (.pas)' (
+    Check 'balance da tbSaldos exibido com duas casas, milhar e sinal (.pas)' (
         ($blocoBalGet -ne '') -and
         $blocoBalGet.Contains(
-            "FormatFloat('0.00', Sender.AsFloat, formatos)") -and
+            "FormatFloat('#,##0.00', Sender.AsFloat, formatos)") -and
+        $blocoBalGet.Contains("ThousandSeparator := '.'") -and
         (-not $blocoBalGet.Contains("' C'")) -and
         (-not $blocoBalGet.Contains("' D'"))) (
-        'SaldosBalanceGetText ausente ou sem o formato 0.00 com sinal')
+        'SaldosBalanceGetText ausente ou sem o formato #,##0.00 com sinal')
     Check 'balance da tbSaldos aceita virgula e ponto na edicao (.pas)' (
         ($blocoBalSet -ne '') -and
         $blocoBalSet.Contains("StringReplace(texto, ',', '.', [])") -and
@@ -1494,6 +1505,23 @@ try {
     Check 'cbYear abre no ano mais recente de saldos (.pas)' (
         $pasTexto -match 'ORDER BY substr\(enddate, 1, 4\) DESC') (
         'lista de anos nao vai do mais recente para o mais antigo')
+    # A coluna de valor da grade de extratos (trnamt e o saldo acumulado) usa
+    # o MESMO par C/D do ExibirSaldo, entao a MESMA mascara - com separador de
+    # milhar no ponto: "1.234,56 C". O editor da grade recebe o valor cru
+    # (DisplayText=False), entao a mascara nao muda o que se digita.
+    $blocoTrnAmt = ''
+    if ($pasTexto -match '(?s)procedure\s+TFormMoney\.ExtratoTrnAmtGetText.*?\nend;') {
+        $blocoTrnAmt = $Matches[0]
+    }
+    Check 'coluna de valor da grade de extratos com C/D e milhar (.pas)' (
+        ($blocoTrnAmt -ne '') -and
+        ($blocoTrnAmt -match
+            "FormatFloat\('#,##0\.00', valor, formatos\) \+ ' C'") -and
+        ($blocoTrnAmt -match
+            "FormatFloat\('#,##0\.00', -valor, formatos\) \+ ' D'") -and
+        ($blocoTrnAmt -match "ThousandSeparator := '\.'") -and
+        ($blocoTrnAmt -match 'AText := Sender\.AsString')) (
+        'ExtratoTrnAmtGetText ausente ou sem o par C/D com separador de milhar')
     # Os DOIS campos de saldo (tsAnterior = abertura, txtSaldo = fechamento
     # do mes ativo) passam pelo MESMO ExibirSaldo: o MESMO par C/D da coluna
     # de valor da grade - a letra assume o papel do sinal, o valor e' o
@@ -1505,9 +1533,12 @@ try {
     if ($pasTexto -match '(?s)procedure\s+TFormMoney\.ExibirSaldo.*?\nend;') {
         $blocoExibirSaldo = $Matches[0]
     }
-    Check 'campos de saldo mostram C/D com valor absoluto (.pas)' (
-        ($blocoExibirSaldo -match "FormatFloat\('0\.00', valor, formatos\) \+ ' C'") -and
-        ($blocoExibirSaldo -match "FormatFloat\('0\.00', -valor, formatos\) \+ ' D'")) (
+    Check 'campos de saldo mostram C/D com valor absoluto e milhar (.pas)' (
+        ($blocoExibirSaldo -match
+            "FormatFloat\('#,##0\.00', valor, formatos\) \+ ' C'") -and
+        ($blocoExibirSaldo -match
+            "FormatFloat\('#,##0\.00', -valor, formatos\) \+ ' D'") -and
+        ($blocoExibirSaldo -match "ThousandSeparator := '\.'")) (
         'ExibirSaldo nao formata o saldo com o par C/D da grade')
     Check 'campos de saldo pintam so o negativo de vermelho (.pas)' (
         ($blocoExibirSaldo -match 'Campo\.Font\.Color := clRed') -and
@@ -3254,9 +3285,10 @@ try {
                         # A digitacao da data e' o caminho do usuario: a 1a
                         # tecla na GRADE abre o editor (EditorShowChar so' o
                         # abre se EditorCanAcceptKey deixar - enddate e' TEXT
-                        # -> ftMemo, e ftMemo e' blob para a TDBGrid de base,
-                        # que recusava a tecla e fazia a digitacao sumir sem
-                        # erro nenhum; o TMoneyGrid e' o que aceita) e o resto
+                        # no SQLite, que viraria ftMemo = blob e a TDBGrid de
+                        # base recusaria a tecla, fazendo a digitacao sumir sem
+                        # erro nenhum; o CAST AS VARCHAR do SELECT faz o campo
+                        # nascer ftString e a grade de base aceita) e o resto
                         # vai para o EDITOR, onde o TCustomMaskEdit insere as
                         # barras sozinhas. Registro novo vazio: o OnNewRecord
                         # so' preenche a conta e o enddate vem NULL, que o
@@ -3454,7 +3486,7 @@ try {
     # intactos: e' a prova de que a fracao sobreviveu do editor ao arquivo
     # (com o SELECT * antigo o campo nasce inteiro e 19,9 gravava 19). A
     # grade mostra o mesmo numero como 19,90, que e' o conferido estatico
-    # no .pas (FormatFloat '0.00' do SaldosBalanceGetText).
+    # no .pas (FormatFloat '#,##0.00' do SaldosBalanceGetText).
     $qtdSalSaldo = [Sq]::Consultar($minewDb,
         "SELECT COUNT(*) FROM saldos WHERE enddate = '2028-03-31'" +
         ' AND ABS(balance - 19.9) < 0.001;')
