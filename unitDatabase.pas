@@ -26,16 +26,21 @@ function IsAccountsDatabase(const AFileName: string): Boolean;
 // Grava as transacoes lidas de um OFX/OFC na tabela "extratos" da conta
 // AAccountId. Usa a MESMA conexao/transacao que a interface ja' tem aberta:
 // uma conexao nova contra o mesmo arquivo brigaria com o lock do SQLite.
-// Todo registro lido entra: nao ha' conferencia de repeticao, nem dentro do
-// proprio arquivo (bancos lancam lancamentos identicos no mesmo dia) nem
-// contra o que ja' esta' gravado (reimportar e' uma escolha do usuario).
-// Junto com as linhas entra tambem o balanco FINAL do periodo coberto pelo
-// arquivo, gravado em "saldos" (ver GravarSaldoFimPeriodo): e' a mesma
-// transacao, entao ou as linhas e o balanco gravam ou nada grava.
-// Devolve quantas linhas entraram.
+// Cada registro e' comparado, UM A UM, com as linhas de "extratos" ja'
+// gravadas dentro do PERIODO DO ARQUIVO (ver PeriodoImportado): linha igual
+// e' MESMA data, MESMO valor e MESMO memo, e o que ja' existe NAO entra de
+// novo - reimportar o mesmo arquivo nao duplica nada. Duas linhas iguais no
+// PROPRIO arquivo tambem sao respeitadas: a linha gravada sai da comparacao
+// e a segunda igual entra (o arquivo diz que sao duas).
+// Junto com as linhas novas vai o balanco FINAL do periodo, gravado em
+// "saldos" (ver GravarSaldoFimPeriodo): e' a mesma transacao, entao ou tudo
+// grava ou nada grava. Sem registro novo o saldo nao e' recalculado - nao ha'
+// o que mudar, e o chamador recebe AJaExistiam > 0 com 0 devolvido.
+// Devolve quantas linhas entraram; em AJaExistiam, quantas do arquivo ja'
+// estavam gravadas.
 // Erro de banco propaga: o dialogo e' do chamador (que tambem sabe o arquivo).
 function ImportarExtratos(AConn: TSQLite3Connection; AAccountId: Integer;
-  const ARegistros: TRegistrosOfx): Integer;
+  const ARegistros: TRegistrosOfx; out AJaExistiam: Integer): Integer;
 
 implementation
 
@@ -294,27 +299,34 @@ end;
 // MESMO enddate, o balance e' ATUALIZADO - uma linha por fim de mes, entao
 // reimportar refaz o periodo em vez de acumular linha nova.
 //
-// Sem data valida em nenhum registro nao ha' periodo para fechar e nada e'
-// gravado aqui (as linhas continuam entrando em "extratos"). E' o caminho
-// tambem do arquivo recusado: quem chama so' chama depois de gravar.
-//
 // Roda DENTRO da transacao da importacao, antes do commit: ou as linhas e o
 // balanco gravam juntos, ou nada grava.
-procedure GravarSaldoFimPeriodo(AConn: TSQLite3Connection;
-  AAccountId: Integer; const ARegistros: TRegistrosOfx);
-var
-  trans: TSQLTransaction;
-  i: Integer;
-  data, primeiraData, ultimaData, inicio, fim, mesInicial, mesFinal: string;
-  sqlAbertura, sqlSoma, sqlValor: string;
-begin
-  trans := AConn.Transaction;
-  if trans = nil then
-    raise Exception.Create('A conexao nao tem transacao para gravar o saldo.');
+//
+// O periodo vem pronto do chamador (PeriodoImportado): e' o MESMO recorte
+// usado para comparar as linhas com o que ja' esta' gravado, entao as duas
+// decisoes - o que entra e o que fecha - enxergam o mesmo arquivo.
 
-  // O periodo vai do primeiro ao ultimo dia IMPORTADO. So' datas validas
-  // decidem o periodo: uma data quebrada no meio do arquivo nao pode puxar
-  // o comeco ou o fim para um lugar que o resto dos registros nega.
+// Periodo coberto pelo arquivo, em chaves que o proprio SQL usa: comeca no
+// 1o dia do 1o mes e fecha no ULTIMO DIA do ultimo mes das datas
+// IMPORTADAS - o fechamento de meses COMPLETOS, mesmo que o arquivo traga
+// so' algumas datas. O MES do periodo tambem sai daqui: e' o que corta
+// "extratos" na comparacao das linhas e na soma do saldo do fim de periodo.
+// Devolve False quando nenhuma data do arquivo da para ler: sem periodo nao
+// ha' o que fechar nem o que comparar.
+function PeriodoImportado(const ARegistros: TRegistrosOfx; out AInicio,
+  AFim, AMesInicial, AMesFinal: string): Boolean;
+var
+  i: Integer;
+  data, primeiraData, ultimaData: string;
+begin
+  Result := False;
+  AInicio := '';
+  AFim := '';
+  AMesInicial := '';
+  AMesFinal := '';
+  // So' datas validas decidem o periodo: uma data quebrada no meio do
+  // arquivo nao pode puxar o comeco ou o fim para um lugar que o resto dos
+  // registros nega.
   primeiraData := '';
   ultimaData := '';
   for i := 0 to High(ARegistros) do
@@ -329,23 +341,115 @@ begin
   end;
   if primeiraData = '' then
     Exit;
-
-  // O saldo comeca no 1o dia do 1o mes e vale ate' o ultimo dia do ultimo
-  // mes: sao dois fechamentos de mes inteiros, por isso o periodo cobre
-  // meses COMPLETOS mesmo que o arquivo traga so' algumas datas.
-  inicio := Copy(primeiraData, 1, 8) + '01';
-  fim := UltimoDiaDoMes(ultimaData);
-  if fim = '' then
+  AFim := UltimoDiaDoMes(ultimaData);
+  if AFim = '' then
     Exit;
-  mesInicial := Copy(primeiraData, 1, 4) + Copy(primeiraData, 6, 2);
-  mesFinal := Copy(ultimaData, 1, 4) + Copy(ultimaData, 6, 2);
+  AInicio := Copy(primeiraData, 1, 8) + '01';
+  AMesInicial := Copy(primeiraData, 1, 4) + Copy(primeiraData, 6, 2);
+  AMesFinal := Copy(ultimaData, 1, 4) + Copy(ultimaData, 6, 2);
+  Result := True;
+end;
+
+// Um TRNAMT do arquivo (texto com PONTO decimal, o formato que os bancos
+// mandam) virando numero. StrToFloat usa o formato do sistema, que aqui e' o
+// portugues (virgula), entao o proprio formato e' trocado na leitura - a
+// MESMA razao de o INSERT guardar o texto cru e deixar a coluna NUMERIC
+// converter.
+function NumeroOfx(const ATexto: string): Double;
+var
+  formatos: TFormatSettings;
+begin
+  formatos := DefaultFormatSettings;
+  formatos.DecimalSeparator := '.';
+  formatos.ThousandSeparator := #0;
+  Result := StrToFloatDef(ATexto, 0, formatos);
+end;
+
+// O MESMO numero com ponto fixo, para servir de CHAVE de comparacao. O campo
+// e' NUMERIC: "1500.00" do arquivo e "1500.0" que o banco devolve sao o MESMO
+// lancamento, e comparar os textos crus nunca casaria. As 4 casas cobrem os
+// centavos que a coluna REAL guarda.
+function NumeroChave(valor: Double): string;
+var
+  formatos: TFormatSettings;
+begin
+  formatos := DefaultFormatSettings;
+  formatos.DecimalSeparator := '.';
+  formatos.ThousandSeparator := #0;
+  Result := Format('%.4f', [valor], formatos);
+end;
+
+// A identidade de uma linha de "extratos" para a comparacao de
+// reimportacao: MESMA data, MESMO valor e MESMO memo. A data passa pela
+// MESMA normalizacao da importacao porque a tabela guarda os DOIS formatos
+// (AAAAMMDD do OFX e AAAA-MM-DD da grade), e o memo e' o que separa dois
+// lancamentos iguais no mesmo dia. chknum e trntype ficam de fora: o
+// primeiro pode ser NULL no banco e o segundo nasce 'OTHER' no import, e os
+// dois fariam uma linha igual escapar da comparacao.
+function ChaveLinha(const ADtPosted: string; AValor: Double;
+  const AMemo: string): string;
+begin
+  Result := DataIsoDtposted(ADtPosted) + '|' + NumeroChave(AValor) + '|' +
+    AMemo;
+end;
+
+// As linhas de "extratos" da conta ja' gravadas DENTRO do periodo do
+// arquivo, uma entrada da lista por linha: e' contra essa lista que cada
+// registro do arquivo e' comparado. A lista vem ordenada (IndexOf binario) e
+// aceita repeticao de chave - banco com duas linhas iguais tem de servir
+// para as DUAS iguais do arquivo.
+// O SELECT traz o trnamt COM CAST: o campo NUMERIC sem precisao o driver
+// tipa como inteiro, e AsFloat devolveria o valor sem os centavos.
+function LinhasDoPeriodo(AConn: TSQLite3Connection; AAccountId: Integer;
+  const AMesInicial, AMesFinal: string): TStringList;
+var
+  consulta: TSQLQuery;
+begin
+  Result := TStringList.Create;
+  Result.Sorted := True;
+  Result.Duplicates := dupAccept;
+  Result.CaseSensitive := True;
+  consulta := TSQLQuery.Create(nil);
+  try
+    consulta.Database := AConn;
+    consulta.Transaction := AConn.Transaction;
+    consulta.SQL.Text := 'SELECT dtposted, CAST(trnamt AS REAL) AS valor,' +
+      ' memo FROM extratos WHERE account_id = ' + IntToStr(AAccountId) +
+      ' AND (substr(dtposted, 1, 4) ||' +
+      ' (CASE WHEN substr(dtposted, 5, 1) = ''-'' THEN substr(dtposted, 6, 2)' +
+      ' ELSE substr(dtposted, 5, 2) END))' +
+      ' BETWEEN ' + QuotedStr(AMesInicial) + ' AND ' + QuotedStr(AMesFinal) +
+      ';';
+    consulta.Open;
+    while not consulta.Eof do
+    begin
+      Result.Add(ChaveLinha(consulta.FieldByName('dtposted').AsString,
+        consulta.FieldByName('valor').AsFloat,
+        consulta.FieldByName('memo').AsString));
+      consulta.Next;
+    end;
+    consulta.Close;
+  finally
+    consulta.Free;
+  end;
+end;
+
+procedure GravarSaldoFimPeriodo(AConn: TSQLite3Connection; AAccountId: Integer;
+  const AInicio, AFim, AMesInicial, AMesFinal: string);
+var
+  trans: TSQLTransaction;
+  sqlAbertura, sqlSoma, sqlValor: string;
+begin
+  trans := AConn.Transaction;
+  if trans = nil then
+    raise Exception.Create('A conexao nao tem transacao para gravar o saldo.');
 
   // Abertura: o saldo da conta registrado antes do periodo, mais recente
   // primeiro e com o MAIOR id desempatando - a mesma regra do saldo anterior
   // da tela (ConsultarSaldo). Sem registro anterior, comeca do zero.
   sqlAbertura := 'COALESCE((SELECT CAST(balance AS REAL) FROM saldos' +
     ' WHERE account_id = ' + IntToStr(AAccountId) +
-    ' AND enddate < ' + QuotedStr(inicio) +
+    ' AND enddate < ' + QuotedStr(AInicio) +
     ' ORDER BY enddate DESC, id DESC LIMIT 1), 0)';
 
   // Soma do periodo por MES (AAAAMM), que e' o unico nivel em que o
@@ -359,7 +463,7 @@ begin
     ' AND (substr(dtposted, 1, 4) ||' +
     ' (CASE WHEN substr(dtposted, 5, 1) = ''-'' THEN substr(dtposted, 6, 2)' +
     ' ELSE substr(dtposted, 5, 2) END))' +
-    ' BETWEEN ' + QuotedStr(mesInicial) + ' AND ' + QuotedStr(mesFinal) +
+    ' BETWEEN ' + QuotedStr(AMesInicial) + ' AND ' + QuotedStr(AMesFinal) +
     '), 0)';
 
   // O CAST AS REAL e' o mesmo motivo do CAST da grade: NUMERIC sem ele o
@@ -373,25 +477,30 @@ begin
   // auto-referencia - e a soma e' de "extratos", tabela outra.
   AConn.ExecuteDirect('UPDATE saldos SET balance = ' + sqlValor +
     ' WHERE account_id = ' + IntToStr(AAccountId) +
-    ' AND enddate = ' + QuotedStr(fim) + ';', trans);
+    ' AND enddate = ' + QuotedStr(AFim) + ';', trans);
 
   // O NOT EXISTS e' o que segura UMA linha por (conta, fim de mes) mesmo
   // com as duas sentencas na mesma transacao: se o UPDATE achou, nao insere.
   AConn.ExecuteDirect('INSERT INTO saldos (account_id, balance, enddate)' +
     ' SELECT ' + IntToStr(AAccountId) + ', ' + sqlValor + ', ' +
-    QuotedStr(fim) + ' FROM (SELECT 1 AS um)' +
+    QuotedStr(AFim) + ' FROM (SELECT 1 AS um)' +
     ' WHERE NOT EXISTS (SELECT 1 FROM saldos WHERE account_id = ' +
-    IntToStr(AAccountId) + ' AND enddate = ' + QuotedStr(fim) + ');', trans);
+    IntToStr(AAccountId) + ' AND enddate = ' + QuotedStr(AFim) + ');', trans);
 end;
 
 function ImportarExtratos(AConn: TSQLite3Connection; AAccountId: Integer;
-  const ARegistros: TRegistrosOfx): Integer;
+  const ARegistros: TRegistrosOfx; out AJaExistiam: Integer): Integer;
 var
   trans: TSQLTransaction;
-  i: Integer;
+  i, posicao: Integer;
   reg: TRegistroOfx;
+  chave: string;
+  temPeriodo: Boolean;
+  periodoInicio, periodoFim, mesInicial, mesFinal: string;
+  existentes: TStringList;
 begin
   Result := 0;
+  AJaExistiam := 0;
   if Length(ARegistros) = 0 then
     Exit;
 
@@ -399,39 +508,70 @@ begin
   if trans = nil then
     raise Exception.Create('A conexao nao tem transacao para gravar o extrato.');
 
+  // O periodo do arquivo e' a referencia das DUAS coisas que vem a seguir:
+  // o recorte com que cada linha e' comparada com o que ja' esta' gravado e
+  // o fim de periodo do saldo. Sem periodo legivel nao ha' o que comparar -
+  // entao toda linha entra.
+  temPeriodo := PeriodoImportado(ARegistros, periodoInicio, periodoFim,
+    mesInicial, mesFinal);
+  if temPeriodo then
+    existentes := LinhasDoPeriodo(AConn, AAccountId, mesInicial, mesFinal)
+  else
+    existentes := TStringList.Create;
   try
-    for i := 0 to High(ARegistros) do
-    begin
-      reg := ARegistros[i];
+    try
+      for i := 0 to High(ARegistros) do
+      begin
+        reg := ARegistros[i];
 
-      // O valor entra como texto e a coluna NUMERIC converte na gravacao.
-      // Nao ha' StrToFloat aqui de proposito: no pt-BR ele le "12.34"
-      // trocando ponto por virgula.
-      AConn.ExecuteDirect(
-        'INSERT INTO extratos (account_id, trntype, dtposted, trnamt,' +
-        ' memo, chknum) VALUES (' + IntToStr(AAccountId) + ', ' +
-        QuotedStr(reg.TrnType) + ', ' + QuotedStr(reg.DtPosted) + ', ' +
-        QuotedStr(reg.TrnAmt) + ', ' + QuotedStr(reg.Memo) + ', ' +
-        QuotedStr(reg.ChkNum) + ');', trans);
-      Inc(Result);
+        // A linha ja' gravada NAO entra de novo, e sai da lista para uma
+        // DUPLICATA do PROPRIO arquivo cair na proxima passada: o banco com
+        // duas iguais serve para as duas iguais do arquivo, e o arquivo com
+        // duas iguais importa a segunda vez so' se o banco tiver so' uma.
+        chave := ChaveLinha(reg.DtPosted, NumeroOfx(reg.TrnAmt), reg.Memo);
+        posicao := existentes.IndexOf(chave);
+        if posicao >= 0 then
+        begin
+          existentes.Delete(posicao);
+          Inc(AJaExistiam);
+          Continue;
+        end;
+
+        // O valor entra como texto e a coluna NUMERIC converte na gravacao.
+        // Nao ha' StrToFloat aqui de proposito: no pt-BR ele le "12.34"
+        // trocando ponto por virgula.
+        AConn.ExecuteDirect(
+          'INSERT INTO extratos (account_id, trntype, dtposted, trnamt,' +
+          ' memo, chknum) VALUES (' + IntToStr(AAccountId) + ', ' +
+          QuotedStr(reg.TrnType) + ', ' + QuotedStr(reg.DtPosted) + ', ' +
+          QuotedStr(reg.TrnAmt) + ', ' + QuotedStr(reg.Memo) + ', ' +
+          QuotedStr(reg.ChkNum) + ');', trans);
+        Inc(Result);
+      end;
+
+      // O balanco do fim do periodo vai na MESMA transacao das linhas: as
+      // duas coisas (extratos e saldos) gravam juntas ou nada grava. Sem
+      // registro novo nao ha' o que recalcular: o saldo ja' reflete as
+      // linhas que estao gravadas, e o chamador avisa que nada mudou.
+      if (Result > 0) and temPeriodo then
+        GravarSaldoFimPeriodo(AConn, AAccountId, periodoInicio, periodoFim,
+          mesInicial, mesFinal);
+
+      // Uma transacao so' para a importacao inteira: ou entra tudo, ou nada.
+      // O Commit fecha o que a interface tem aberto nessa transacao (opcao
+      // sqoKeepOpenOnCommit mantem as queries ligadas), por isso o chamador
+      // recarrega os filtros e a grade depois daqui.
+      if trans.Active then
+        trans.Commit;
+    except
+      // Falha no meio: desfaz as linhas que ja tinham entrado para o
+      // extrato nao ficar pela metade.
+      if trans.Active then
+        trans.Rollback;
+      raise;
     end;
-
-    // O balanco do fim do periodo vai na MESMA transacao das linhas: as
-    // duas coisas (extratos e saldos) gravam juntas ou nada grava.
-    GravarSaldoFimPeriodo(AConn, AAccountId, ARegistros);
-
-    // Uma transacao so' para a importacao inteira: ou entra tudo, ou nada.
-    // O Commit fecha o que a interface tem aberto nessa transacao (opcao
-    // sqoKeepOpenOnCommit mantem as queries ligadas), por isso o chamador
-    // recarrega os filtros e a grade depois daqui.
-    if trans.Active then
-      trans.Commit;
-  except
-    // Falha no meio: desfaz as linhas que ja tinham entrado para o
-    // extrato nao ficar pela metade.
-    if trans.Active then
-      trans.Rollback;
-    raise;
+  finally
+    existentes.Free;
   end;
 end;
 

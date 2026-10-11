@@ -19,9 +19,10 @@
         database aberto -> a interface fica (tbContas e tbSaldos ligadas as
         tabelas); "Fechar Database" volta a esconder
     [9] Importar OFC/OFX (miImport) -> linhas novas entram em "extratos",
-        a reimportacao REPETE as linhas (registro igual e' permitido),
-        extrato em ANSI vira UTF-8 no arquivo e o balanco do fim do
-        periodo do arquivo e' gravado em "saldos"
+        a reimportacao do MESMO arquivo nao repete nada (cada registro e'
+        comparado com o que ja' esta' gravado no periodo do arquivo e o
+        aviso diz que os dados ja' existem), extrato em ANSI vira UTF-8 no
+        arquivo e o balanco do fim do periodo e' gravado em "saldos"
     [10] "Voltar" da tbContas -> cbAccount e' remontado e reflete a conta
         excluida pela propria tela de gestao enquanto o app estava aberto
     [11] Nenhum crash registrado no log de eventos do Windows (WER)
@@ -2674,15 +2675,15 @@ try {
             [UiTest]::TabCount($guiaImp) -eq 4) (
             'guias=' + [UiTest]::TabCount($guiaImp) + ' hwnd=' + $guiaImp)
 
-        # Reimportar o MESMO arquivo REPETE as linhas: registro igual e'
-        # permitido (a conferencia disso e' no arquivo, no fim do passo). A
-        # reimportacao tambem refaz o MESMO fim de periodo (30/04/2025), que
-        # e' ATUALIZADO em vez de ganhar linha nova, entao a lista de anos
-        # segue com os mesmos 2. A
-        # reimportacao e' de PROPOSITO de outra tela (tbSaldos): importar tem
-        # de CAIR na tela de extratos, onde as linhas novas aparecem - sem
-        # navegar, quem importou de uma tela de gestao ficava la, sem ver
-        # nada do que entrou.
+        # Reimportar o MESMO arquivo NAO REPETE as linhas: cada registro e'
+        # comparado, um a um, com as linhas de "extratos" ja' gravadas DENTRO
+        # do periodo do arquivo, e o resultado tem de ser o aviso de "dados
+        # ja' existem" - nada entra e o saldo do fim de periodo nao e'
+        # recalculado (a prova das duas coisas esta' no arquivo, no fim do
+        # passo). A lista de anos segue com os mesmos 2. A reimportacao e' de
+        # PROPOSITO de outra tela (tbSaldos): importar tem de CAIR na tela de
+        # extratos, onde as linhas novas aparecem - sem navegar, quem importou
+        # de uma tela de gestao ficava la, sem ver nada do que entrou.
         $idGerSal9 = [UiTest]::MenuId($mainImp, 'Gerenciar Saldos')
         Check 'item de menu "Gerenciar Saldos" encontrado (passo [9])' (
             $idGerSal9 -gt 0) ('id=' + $idGerSal9)
@@ -2706,6 +2707,21 @@ try {
             Check 'resultado da reimportacao dispensado' (
                 Wait-DialogClosed $dlgImp2)
         }
+        # O aviso de "dados ja' existem" e' a parte observavel do pedido, mas
+        # o MessageDlg do LCL vira TaskDialog no Windows: a mensagem e'
+        # desenhada na propria janela, sem filho que o EnumChildWindows leia
+        # (DialogText volta vazio). A prova e' entao em CODIGO, do mesmo jeito
+        # dos demais checks estaticos do miImportClick - e o arquivo, la' no
+        # fim do passo, e' o que prova que NADA entrou.
+        $blocoImport9 = ''
+        if ($pasTexto -match '(?s)procedure\s+TFormMoney\.miImportClick.*?\nend;') {
+            $blocoImport9 = $Matches[0]
+        }
+        Check 'miImport tem o caminho de "dados ja existem" (.pas)' (
+            ($blocoImport9 -match 'Os dados deste extrato') -and
+            ($blocoImport9 -match 'jaExistiam > 0') -and
+            ($blocoImport9 -match 'novos = 0')) (
+            'miImportClick sem o aviso de dados ja existem')
         # O importar navega: a reimportacao partiu da tbSaldos e tem de cair
         # na tela de extratos (a grade de volta visivel).
         $gradeVolta = $false
@@ -2761,16 +2777,16 @@ try {
     }
 
     # Conferencia no arquivo: so' funciona com a conexao encerrada (app morta).
-    # 9 linhas novas no total: 4 da 1a importacao + os MESMOS 4 repetidos na
-    # reimportacao (registro igual e' permitido) + 1 do ANSI.
+    # 5 linhas novas no total: 4 da 1a importacao + 1 do ANSI. A reimportacao
+    # do mesmo arquivo nao somou nada - as 4 linhas ja' estavam gravadas.
     if (-not (Test-Path $minewDb)) {
         Check 'miNew-test.db disponivel para a conferencia final' $false (
             'arquivo ausente')
     }
     else {
         $depois = [Sq]::Consultar($minewDb, 'SELECT COUNT(*) FROM extratos;')
-        Check 'importacao gravou 9 linhas (4 + 4 repetidos + 1 do ANSI)' (
-            $depois -eq ($antes + 9)) ('antes=' + $antes + ' depois=' + $depois)
+        Check 'importacao gravou 5 linhas (4 + 1 do ANSI; reimportacao = 0)' (
+            $depois -eq ($antes + 5)) ('antes=' + $antes + ' depois=' + $depois)
         # O arquivo de outra conta (ACCTID 9999) foi recusado na tela; a
         # prova duraria no arquivo: o registro dele nao pode estar em
         # "extratos" - se estiver, a conferencia de conta nao rodou. (-1 =
@@ -2783,27 +2799,28 @@ try {
         }
         Check 'extrato da outra conta nao foi gravado' ($qtdOutra -eq 0) (
             'linhas=' + $qtdOutra)
-        # As linhas do arquivo UTF-8 estao gravadas DUAS vezes (importacao +
-        # reimportacao do mesmo arquivo) - e' a prova de que registro repetido
-        # entra; o ANSI foi importado uma vez so'.
-        Check 'data com hora+fuso virou os 8 primeiros digitos (2x)' (
+        # As linhas do arquivo UTF-8 estao gravadas UMA vez so': a
+        # reimportacao do mesmo arquivo nao repetiu nenhuma - e' a prova
+        # direta da comparacao de cada registro com o que ja' estava em
+        # "extratos" dentro do periodo do arquivo.
+        Check 'data com hora+fuso virou os 8 primeiros digitos (1x)' (
             [Sq]::Consultar($minewDb,
                 "SELECT COUNT(*) FROM extratos WHERE dtposted = '20250305';"
-            ) -eq 2)
-        Check 'registro no estilo XML gravado (2x)' (
+            ) -eq 1)
+        Check 'registro no estilo XML gravado (1x)' (
             [Sq]::Consultar($minewDb,
                 "SELECT COUNT(*) FROM extratos WHERE dtposted = '20250410';"
-            ) -eq 2)
-        Check 'CHECKNUM virou chknum (2x)' (
+            ) -eq 1)
+        Check 'CHECKNUM virou chknum (1x)' (
             [Sq]::Consultar($minewDb,
-                "SELECT COUNT(*) FROM extratos WHERE chknum = '101';") -eq 2)
-        Check 'memo do SGML gravado (2x)' (
+                "SELECT COUNT(*) FROM extratos WHERE chknum = '101';") -eq 1)
+        Check 'memo do SGML gravado (1x)' (
             [Sq]::Consultar($minewDb,
                 "SELECT COUNT(*) FROM extratos WHERE memo = 'Pagamento de luz';"
-            ) -eq 2)
-        Check 'valor numerico gravado (2x)' (
+            ) -eq 1)
+        Check 'valor numerico gravado (1x)' (
             [Sq]::Consultar($minewDb,
-                'SELECT COUNT(*) FROM extratos WHERE trnamt = -123.45;') -eq 2)
+                'SELECT COUNT(*) FROM extratos WHERE trnamt = -123.45;') -eq 1)
         # O Sq le o .db com charset ANSI: acento so' se confere nos BYTES do
         # arquivo (em UTF-8), que e' o formato gravado pelo parser.
         $textoDb = [Text.Encoding]::UTF8.GetString(
@@ -2820,19 +2837,20 @@ try {
         # INT, entao o balance (REAL) e' conferido contando a linha em que
         # |balance - esperado| < 0.01 - o ponto decimal e' o do SQL (o
         # locale da suite nao entra na conta).
-        # Periodo do arquivo UTF-8: 202401 ate' 202504, importado 2x. A
-        # abertura e' zero (nenhum saldo anterior a 2024-01) e a soma e' a
-        # de TODAS as linhas de "extratos" no periodo: -4860 (as 80 de
-        # 2025-01 do passo [8]) + 1311.65 (o arquivo) + 1311.65 (as MESMAS
-        # 4 repetidas na reimportacao) = -2236.70.
+        # Periodo do arquivo UTF-8: 202401 ate' 202504. A abertura e' zero
+        # (nenhum saldo anterior a 2024-01) e a soma e' a de TODAS as linhas
+        # de "extratos" no periodo: -4860 (as 80 de 2025-01 do passo [8]) +
+        # 1311.65 (as 4 linhas do arquivo, que entraram uma vez so'). A
+        # reimportacao nao mexeu aqui de proposito: sem registro novo o
+        # saldo nao e' recalculado.
         $qtdFim2504 = [Sq]::Consultar($minewDb,
             "SELECT COUNT(*) FROM saldos WHERE enddate = '2025-04-30';")
         Check 'fim de periodo do arquivo gravado em UMA linha' (
             $qtdFim2504 -eq 1) ('linhas=' + $qtdFim2504)
         $balFim2504 = [Sq]::Consultar($minewDb,
             "SELECT COUNT(*) FROM saldos WHERE enddate = '2025-04-30'" +
-            ' AND ABS(balance + 2236.7) < 0.01;')
-        Check 'balanco do fim de periodo (reimportacao atualizou)' (
+            ' AND ABS(balance + 3548.35) < 0.01;')
+        Check 'balanco do fim de periodo (reimportacao nao somou)' (
             $balFim2504 -eq 1) ('linhas=' + $balFim2504)
         # O arquivo ANSI traz um registro so', de MAR/2024: o periodo e' de
         # um mes, entao abre em 2024-03-01 e fecha em 2024-03-31 com a soma

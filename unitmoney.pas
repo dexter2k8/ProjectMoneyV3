@@ -1526,7 +1526,7 @@ var
   acctidArquivo, acctidConta: string;
   registros: TRegistrosOfx;
   consulta: TSQLQuery;
-  ignorados, novos, contaId, indice: Integer;
+  ignorados, novos, jaExistiam, contaId, indice: Integer;
 begin
   // Cada linha de "extratos" aponta para uma conta (account_id NOT NULL),
   // entao sem conta escolhida nao ha para onde gravar. O menu "Transacoes"
@@ -1622,7 +1622,8 @@ begin
       SQLQueryContas.Close;
       SQLQuerySaldos.Close;
       SQLQueryExtratos.Close;
-      novos := ImportarExtratos(SQLite3ConnContas, contaId, registros);
+      novos := ImportarExtratos(SQLite3ConnContas, contaId, registros,
+        jaExistiam);
     except
       on E: Exception do
         erro := 'Não foi possível importar "' + ExtractFileName(caminho) +
@@ -1666,11 +1667,25 @@ begin
   end;
 
   // O que o usuario precisa saber: quanto entrou e quanto o arquivo tinha
-  // incompleto. Repetido nao e' assunto aqui: o que vier do arquivo entra,
-  // inclusive linha identica a outra do proprio extrato.
-  mensagem := 'Importação concluída.' + LineEnding + LineEnding +
-    IntToStr(novos) + ' ' + Plural(novos, 'registro adicionado em "',
-    'registros adicionados em "') + contaTexto + '".';
+  // incompleto. Linha igual a uma ja' gravada NAO entra de novo, entao
+  // reimportar o MESMO arquivo nao faz segunda copia: o dialogo diz que os
+  // dados ja' existem. Quando so' parte do arquivo e' nova, a segunda linha
+  // do aviso mostra quantas linhas foram mantidas como estavam.
+  if (jaExistiam > 0) and (novos = 0) then
+    mensagem := 'Os dados deste extrato já existem em "' + contaTexto + '".' +
+      LineEnding + LineEnding + IntToStr(jaExistiam) + ' ' +
+      Plural(jaExistiam, 'registro já estava gravado.',
+      'registros já estavam gravados.')
+  else
+  begin
+    mensagem := 'Importação concluída.' + LineEnding + LineEnding +
+      IntToStr(novos) + ' ' + Plural(novos, 'registro adicionado em "',
+      'registros adicionados em "') + contaTexto + '".';
+    if jaExistiam > 0 then
+      mensagem := mensagem + LineEnding + IntToStr(jaExistiam) + ' ' +
+        Plural(jaExistiam, 'registro já existia e foi mantido.',
+        'registros já existiam e foram mantidos.');
+  end;
   if ignorados > 0 then
     mensagem := mensagem + LineEnding + IntToStr(ignorados) + ' ' +
       Plural(ignorados, 'bloco ignorado (sem data ou sem valor).',
