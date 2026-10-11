@@ -180,6 +180,12 @@ type
     FInListView: Boolean;
     // Título da tela normal (mês) antes de entrar na lista de bancos
     FSavedTitle: String;
+    // Valor do tsAnterior (a abertura do mês ativo) guardado como NÚMERO. É
+    // ele que semeia a coluna Saldo da grade: o SQLite soma trnamt linha a
+    // linha a partir dele (função de janela SUM(...) OVER (...)), então o
+    // número tem de existir ANTES de o SELECT ser montado - o Caption do
+    // tsAnterior é texto formatado ("37,50 C"), não serve para a query.
+    FSaldoAnterior: Double;
     // Base do miList/miGerCon: guarda guias + título e ativa a aba com as
     // guias ocultas (o "Voltar" devolve o estado salvo aqui).
     procedure NavigateToTab(ATab: TTabSheet);
@@ -238,9 +244,9 @@ type
     procedure ExibirSaldo(Campo: TControl; valor: Double);
     // tsAnterior = abertura do mês ativo: balance do saldo IMEDIATAMENTE
     // ANTERIOR ao 1º dia do mês da guia ativa (no ano do cbYear e na conta
-    // do cbAccount - mesma regra dos filtros); zero quando não existe. Roda
-    // no fim do AplicarFiltroExtratos, que é o único ponto que muda com
-    // guia, ano, conta, abertura e importação.
+    // do cbAccount - mesma regra dos filtros); zero quando não existe. Guarda
+    // o valor em FSaldoAnterior, que é a SEMENTE da coluna Saldo da grade -
+    // daí rodar ANTES do SELECT ser montado em AplicarFiltroExtratos.
     procedure AtualizarSaldoAnterior;
     // txtSaldo = fechamento do mês ativo ("Saldo:" no rodapé): balance do
     // saldo MAIS RECENTE gravado no próprio mês da guia ativa (mesmo ano,
@@ -332,6 +338,20 @@ begin
     Result := ASingular
   else
     Result := APlural;
+end;
+
+// Número virando literal de SQL: o separador decimal é SEMPRE ponto, porque o
+// SQL não entende vírgula - e o DefaultFormatSettings do programa é o do
+// sistema, que aqui é português (vírgula). FloatToStr com formato próprio
+// cobre isso; o valor é Double puro, então não há o que injetar.
+function SqlNumero(valor: Double): string;
+var
+  formatos: TFormatSettings;
+begin
+  formatos := DefaultFormatSettings;
+  formatos.DecimalSeparator := '.';
+  formatos.ThousandSeparator := #0;
+  Result := FloatToStr(valor, formatos);
 end;
 
 procedure TFormMoney.cbAccountChange(Sender: TObject);
@@ -927,6 +947,13 @@ begin
       QuotedStr(Format('%.2d', [mes]));
   end;
 
+  // A abertura do mês (o valor do tsAnterior) é também a SEMENTE da coluna
+  // Saldo da grade: o SQLite soma o trnamt linha a linha a partir dela
+  // (função de janela SUM(...) OVER (...)). O número tem de existir ANTES de
+  // o SELECT ser montado, então este cálculo veio para cima - antes vivia no
+  // fim, junto com o txtSaldo, que continua ali.
+  AtualizarSaldoAnterior;
+
   // O * não serve por causa do "trnamt": a coluna é NUMERIC e o driver
   // SQLite a tipa como TLargeintField, que LÊ por sqlite3_column_int64 - os
   // centavos de um -198,50 apareciam como "198,00 D" e a GRAVAÇÃO de uma
@@ -936,8 +963,21 @@ begin
   // usa para gerar o INSERT/UPDATE ("trnamt"=:"trnamt"), então a edição
   // continua valendo para o arquivo. As demais colunas vêm nomeadas e sem
   // CAST, iguais ao *.
+  // A coluna saldo é a MESMA ideia aplicada à soma corrente: o OVER usa o
+  // MESMO ORDER BY do fim da query (dtposted, id - id é chave, então não há
+  // empate), e a semente FSaldoAnterior entra como constante. Assim a 1a
+  // linha já vem com abertura + trnamt e cada linha seguinte soma a anterior
+  // - o saldo acumulado do mês, na ordem em que a grade mostra. O CAST final
+  // é o mesmo motivo do trnamt: segurar o tipo como REAL.
+  // E o parser do sqldb continua achando a query atualizável: em ppSelect só
+  // o FROM muda o estado, e o SUM/OVER/ORDER de dentro dos parênteses são
+  // pulados inteiros como um fraseado só (é por isso que a edição do trnamt
+  // continua gravando).
   sql := 'SELECT id, account_id, trntype, dtposted,' +
-    ' CAST(trnamt AS REAL) AS trnamt, memo, chknum FROM extratos';
+    ' CAST(trnamt AS REAL) AS trnamt, memo, chknum,' +
+    ' CAST(' + SqlNumero(FSaldoAnterior) +
+    ' + SUM(CAST(trnamt AS REAL)) OVER (ORDER BY dtposted, id) AS REAL)' +
+    ' AS saldo FROM extratos';
   if condicao <> '' then
     sql := sql + ' WHERE ' + condicao;
   sql := sql + ' ORDER BY dtposted, id;';
@@ -949,11 +989,11 @@ begin
   SQLQueryExtratos.Open;
   PrepararCamposExtratos;
 
-  // Os DOIS campos de saldo são da MESMA tela (ano + mês + conta que
-  // acabaram de ser aplicados), então são calculados aqui: é o único ponto
-  // que roda em todas as mudanças de guia, de ano, de conta, na abertura e
-  // na importação.
-  AtualizarSaldoAnterior;
+  // O txtSaldo é o fechamento do mês (saldo lançado DENTRO do mês ativo) e
+  // não entra em nada da query, então continua sendo calculado aqui: este é
+  // o único ponto que roda em todas as mudanças de guia, de ano, de conta, na
+  // abertura e na importação. (O tsAnterior também é daqui, mas ANTES do
+  // SELECT - ver acima.)
   AtualizarSaldoMes;
 end;
 
@@ -1042,6 +1082,9 @@ end;
 // recente de saldos ANTERIOR ao primeiro dia do mês da guia ativa (no ano do
 // cbYear, que é o que define o ano desse limite). Não havendo nenhum, o
 // pedido é exibir zero - que aparece como crédito ("0,00 C").
+// O valor é guardado em FSaldoAnterior antes de exibir porque é ele a
+// semente da coluna Saldo da grade (a soma corrente do SQLite começa nele) -
+// e essa semente precisa existir ANTES de o SELECT ser montado.
 procedure TFormMoney.AtualizarSaldoAnterior;
 var
   ano, mes: Integer;
@@ -1050,10 +1093,11 @@ begin
     // enddate é texto ISO (AAAA-MM-DD - formato que o próprio form grava),
     // então a comparação de texto ordena por data: o limite é o 1º dia do
     // mês ATIVO e o que vale é o registro mais recente antes dele.
-    ExibirSaldo(tsAnterior, ConsultarSaldo('enddate < ' +
-      QuotedStr(Format('%.4d-%.2d-01', [ano, mes]))))
+    FSaldoAnterior := ConsultarSaldo('enddate < ' +
+      QuotedStr(Format('%.4d-%.2d-01', [ano, mes])))
   else
-    ExibirSaldo(tsAnterior, 0);
+    FSaldoAnterior := 0;
+  ExibirSaldo(tsAnterior, FSaldoAnterior);
 end;
 
 // O txtSaldo (rótulo "Saldo:" no rodapé) mostra o balance do saldo DO mês
@@ -1141,9 +1185,11 @@ begin
     AText := Sender.AsString;
 end;
 
-// trnamt vira "20,00 C" (crédito) ou "20,00 D" (débito): a letra assume o
-// papel do sinal e o valor é o absoluto, com 2 casas e vírgula. O editor da
-// grade lê o valor cru (DisplayText=False), então o gravado não muda.
+// trnamt e saldo viram "20,00 C" (crédito) ou "20,00 D" (débito): a letra
+// assume o papel do sinal e o valor é o absoluto, com 2 casas e vírgula.
+// Serve as DUAS colunas porque lê tudo pelo Sender. O editor da grade lê o
+// valor cru (DisplayText=False), então o gravado não muda - no saldo não há
+// editor, que é justamente o ReadOnly do PrepararCamposExtratos.
 procedure TFormMoney.ExtratoTrnAmtGetText(Sender: TField; var AText: string;
   DisplayText: Boolean);
 var
@@ -1335,11 +1381,14 @@ end;
 
 // Cor do valor conforme o sinal: crédito azul, débito vermelho. Célula
 // selecionada fica com as cores padrão da seleção — vermelho/azul sobre o
-// fundo de destaque não dão para ler.
+// fundo de destaque não dão para ler. A coluna saldo entra na mesma regra do
+// trnamt: ela também é dinheiro com sinal, e o saldo acumulado do mês costuma
+// cruzar o zero (débito vermelho no fim do mês).
 procedure TFormMoney.gridTransPrepareCanvas(Sender: TObject; DataCol: Integer;
   Column: TColumn; AState: TGridDrawState);
 begin
-  if (Column = nil) or (Column.FieldName <> 'trnamt') then
+  if (Column = nil) or ((Column.FieldName <> 'trnamt') and
+    (Column.FieldName <> 'saldo')) then
     Exit;
   if gdSelected in AState then
     Exit;
@@ -1351,6 +1400,14 @@ begin
     gridTrans.Canvas.Font.Color := clRed;
 end;
 
+// Liga os handlers de exibição da grade de extratos. O saldo vem daqui:
+// a coluna saldo nasce da expressão da query, com os ProviderFlags padrão do
+// TField ([pfInUpdate, pfInWhere]) - e com eles o sqldb geraria um
+// UPDATE ... "saldo"=:"saldo", que o SQLite recusaria ("no such column") a
+// cada edição da grade. Zerar os ProviderFlags tira o campo do SET e do
+// WHERE; o ReadOnly tira ele também da edição da célula (é calculado - não
+// há o que digitar). E o texto é o MESMO par C/D do trnamt, que já formata
+// qualquer campo numérico pelo Sender.
 procedure TFormMoney.PrepararCamposExtratos;
 begin
   SQLQueryExtratos.FieldByName('dtposted').OnGetText :=
@@ -1358,6 +1415,9 @@ begin
   SQLQueryExtratos.FieldByName('memo').OnGetText := @ExtratoTextoGetText;
   SQLQueryExtratos.FieldByName('chknum').OnGetText := @ExtratoTextoGetText;
   SQLQueryExtratos.FieldByName('trnamt').OnGetText := @ExtratoTrnAmtGetText;
+  SQLQueryExtratos.FieldByName('saldo').OnGetText := @ExtratoTrnAmtGetText;
+  SQLQueryExtratos.FieldByName('saldo').ReadOnly := True;
+  SQLQueryExtratos.FieldByName('saldo').ProviderFlags := [];
 end;
 
 // enddate é TEXT (ftMemo no driver SQLite): sem dgDisplayMemoText a grade

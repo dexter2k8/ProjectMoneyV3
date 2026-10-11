@@ -1114,13 +1114,14 @@ try {
         $detColunas = 'coluna faltando ou fora de ordem no bloco gridTrans'
         $ordemOk = $true
         $posColuna = -1
-        foreach ($nomeColuna in @('dtposted', 'memo', 'chknum', 'trnamt')) {
+        foreach ($nomeColuna in @('dtposted', 'memo', 'chknum', 'trnamt',
+            'saldo')) {
             $posNova = $blocoGrid.IndexOf("FieldName = '" + $nomeColuna + "'")
             if ($posNova -le $posColuna) { $ordemOk = $false; break }
             $posColuna = $posNova
         }
     }
-    Check 'gridTrans mostra dtposted, memo, chknum e trnamt nessa ordem (.lfm)' (
+    Check 'gridTrans mostra dtposted, memo, chknum, trnamt e saldo nessa ordem (.lfm)' (
         $ordemOk) $detColunas
     # Rotulos das colunas: o par (campo, rotulo) e' lido POR ITEM do
     # Columns - e' o vinculo dentro do item que prova que o rotulo e' do
@@ -1132,14 +1133,14 @@ try {
     $rotuloDescricao = 'Descri' + [char]0x00E7 + [char]0x00E3 + 'o'
     $esperadoTrans = @(
         @('dtposted', 'Data'), @('memo', $rotuloDescricao),
-        @('chknum', 'Documento'), @('trnamt', 'Valor'))
+        @('chknum', 'Documento'), @('trnamt', 'Valor'), @('saldo', 'Saldo'))
     $detTitulos = $detGrid
     $titulosOk = $false
     if ($blocoGrid -ne '') {
         $detTitulos = Test-LfmLabels (Get-LfmColumns $blocoGrid) $esperadoTrans
         $titulosOk = ($detTitulos -eq $null)
     }
-    Check 'gridTrans rotula as colunas (Data, Descricao, Documento, Valor) (.lfm)' (
+    Check 'gridTrans rotula as colunas (Data, Descricao, Documento, Valor, Saldo) (.lfm)' (
         $titulosOk) $detTitulos
     $detCanvas = 'OnPrepareCanvas ausente no bloco gridTrans'
     if ($blocoGrid -eq '') { $detCanvas = $detGrid }
@@ -1169,6 +1170,7 @@ try {
         'memo=ExtratoTextoGetText',
         'chknum=ExtratoTextoGetText',
         'trnamt=ExtratoTrnAmtGetText',
+        'saldo=ExtratoTrnAmtGetText',
         'bankid=BancoIdGetText')) {
         $campo, $handler = $ligacao -split '='
         $padrao = "FieldByName\('" + $campo + "'\)\.OnGetText\s*:=\s*@" + $handler
@@ -1433,8 +1435,10 @@ try {
         'ExibirSaldo nao colore o saldo pelo sinal')
     # Cada campo consulta o SEU periodo: o Anterior e' o registro ANTERIOR ao
     # 1o dia do mes ativo; o txtSaldo e' o registro DENTRO do mes ativo (mesmo
-    # recorte substr de ano/mes que monta as guias). E os dois sao atualizados
-    # no MESMO gatilho (fim do AplicarFiltroExtratos).
+    # recorte substr de ano/mes que monta as guias). Os DOIS continuam no
+    # AplicarFiltroExtratos, MAS o Anterior subiu para ANTES do SELECT: o
+    # valor dele e' a semente da coluna Saldo da grade, entao tem de existir
+    # antes de a query ser montada.
     $blocoSalAnterior = ''
     if ($pasTexto -match '(?s)procedure\s+TFormMoney\.AtualizarSaldoAnterior.*?\nend;') {
         $blocoSalAnterior = $Matches[0]
@@ -1443,6 +1447,12 @@ try {
         ($blocoSalAnterior -match "enddate < ") -and
         ($blocoSalAnterior -match 'ExibirSaldo\(tsAnterior')) (
         'AtualizarSaldoAnterior nao consulta o saldo anterior ao mes nem exibe no tsAnterior')
+    # E o VALOR tem de ser guardado como numero (FSaldoAnterior): o Caption do
+    # tsAnterior e' texto formatado ("37,50 C") e nao serve para a query.
+    Check 'tsAnterior guarda o valor da abertura em FSaldoAnterior (.pas)' (
+        ($blocoSalAnterior -match 'FSaldoAnterior\s*:=\s*ConsultarSaldo') -and
+        ($pasTexto -match 'FSaldoAnterior:\s*Double')) (
+        'AtualizarSaldoAnterior nao guarda o valor da abertura como numero')
     $blocoSalMes = ''
     if ($pasTexto -match '(?s)procedure\s+TFormMoney\.AtualizarSaldoMes.*?\nend;') {
         $blocoSalMes = $Matches[0]
@@ -1452,9 +1462,51 @@ try {
         ($blocoSalMes -match "substr\(enddate, 6, 2\) = ") -and
         ($blocoSalMes -match 'ExibirSaldo\(txtSaldo')) (
         'AtualizarSaldoMes nao consulta o saldo dentro do mes ativo nem exibe no txtSaldo')
+    $blocoFiltroT = ''
+    if ($pasTexto -match '(?s)procedure\s+TFormMoney\.AplicarFiltroExtratos.*?\nend;') {
+        $blocoFiltroT = $Matches[0]
+    }
     Check 'os dois campos de saldo atualizam juntos no filtro (.pas)' (
-        $pasTexto -match 'AtualizarSaldoAnterior;\s+AtualizarSaldoMes;') (
+        ($blocoFiltroT -match 'AtualizarSaldoAnterior;') -and
+        ($blocoFiltroT -match 'AtualizarSaldoMes;')) (
         'AplicarFiltroExtratos nao atualiza os dois campos de saldo')
+    Check 'abertura calculada ANTES do SELECT e usada como semente da coluna Saldo (.pas)' (
+        ($blocoFiltroT -match 'AtualizarSaldoAnterior;') -and
+        ($blocoFiltroT.IndexOf('AtualizarSaldoAnterior;') -lt
+            $blocoFiltroT.IndexOf('SQLQueryExtratos.Open;'))) (
+        'AtualizarSaldoAnterior nao roda antes de a query da grade ser aberta')
+
+    # ---- coluna Saldo (saldo acumulado do mes) ----------------------------
+    # O pedido: a 1a linha e' a abertura (tsAnterior) + o trnamt da propria
+    # linha; cada linha seguinte soma o trnamt a anterior, ate o fim do mes.
+    # Quem faz isso e' o SQLite, com a funcao de janela SUM(...) OVER (...)
+    # - o OVER tem de usar o MESMO ORDER BY do fim da query (dtposted, id;
+    # id e' chave, entao nao ha empate que mude a ordem da soma). A semente e'
+    # o FSaldoAnterior, formatado com PONTO decimal (SqlNumero): o SQL nao
+    # entende virgula, e o sistema daqui e' portugues.
+    Check 'coluna Saldo vem de soma corrente no SQLite (.pas)' (
+        ($blocoFiltroT -match 'SUM\(CAST\(trnamt AS REAL\)\) OVER') -and
+        ($blocoFiltroT -match 'SqlNumero\(FSaldoAnterior\)') -and
+        ($blocoFiltroT -match 'AS saldo')) (
+        'AplicarFiltroExtratos nao calcula o saldo acumulado com funcao de janela')
+    Check 'OVER da coluna Saldo usa o mesmo ORDER BY da grade (.pas)' (
+        $blocoFiltroT -match 'OVER \(ORDER BY dtposted, id\)') (
+        'soma corrente nao ordena igual a grade (dtposted, id)')
+    Check 'SqlNumero força ponto decimal para o SQL (.pas)' (
+        $pasTexto -match 'DecimalSeparator\s*:=\s*''\.''') (
+        'SqlNumero nao força o separador decimal ponto')
+    # SEM isto o sqldb geraria um UPDATE com "saldo"=:"saldo" e o SQLite
+    # recusaria ("no such column") TODA vez que o usuario editasse uma celula
+    # da grade - o saldo e' calculado, nao existe na tabela extratos.
+    Check 'coluna Saldo fora do UPDATE: ReadOnly + ProviderFlags vazios (.pas)' (
+        ($pasTexto -match
+            "FieldByName\('saldo'\)\.ReadOnly\s*:=\s*True") -and
+        ($pasTexto -match
+            "FieldByName\('saldo'\)\.ProviderFlags\s*:=\s*\[\]")) (
+        'saldo sem ReadOnly/ProviderFlags: o UPDATE da grade tentaria gravar a coluna')
+    Check 'coluna Saldo pinta pelo sinal na grade (.pas)' (
+        $pasTexto -match "Column\.FieldName <> 'trnamt'\) and\s*\r?\n\s*\(Column\.FieldName <> 'saldo'") (
+        'gridTransPrepareCanvas nao colore a coluna saldo')
 
     # ------------------------------------------------ [2] cria o banco
     Write-Banner '[2/11] Sem banks.db -> deve criar o arquivo'

@@ -479,6 +479,14 @@ object FormMoney: TFormMoney
         Title.Caption = 'Valor'
         Width = 110
         FieldName = 'trnamt'
+      end    
+      item
+        Alignment = taRightJustify
+        SizePriority = 0
+        Title.Alignment = taRightJustify
+        Title.Caption = 'Saldo'
+        Width = 110
+        FieldName = 'saldo'
       end>
     DataSource = DataSourceExtratos
     TabOrder = 5
