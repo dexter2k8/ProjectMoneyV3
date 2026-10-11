@@ -17,6 +17,10 @@ unit unitOfx;
   esperam: arquivo em UTF-8 passa direto e o resto (extrato antigo com
   CHARSET:1252, o padrao dos bancos em portugues) e' convertido de
   Windows-1252 para UTF-8 byte a byte - sem depender do codepage da maquina.
+
+  Alem do OFC/OFX, este arquivo le tambem CSV de transacoes (LerCsv) - a
+  mesma ideia por outro caminho: as duas leituras devolvem TRegistrosOfx,
+  entao a GRAVACAO continua sendo uma so' (ImportarExtratos, em unitDatabase).
 }
 
 interface
@@ -59,10 +63,34 @@ function LerAcctIdDoArquivo(const AFileName: string): string;
 // o dialogo e' do chamador.
 function LerOfx(const AFileName: string; out AIgnorados: Integer): TRegistrosOfx;
 
+// Le um CSV de transacoes (o modelo e' backup/extrato.csv) e devolve uma
+// transacao por linha, nos MESMOS campos de TRegistroOfx - e' por isso que a
+// gravacao nao tem caminho proprio: ela reaproveita o do importador de
+// OFX/OFC. O contrato do arquivo, tirado do modelo:
+//   - separador ";" e a PRIMEIRA linha de cabecalho, com as colunas lidas
+//     PELO NOME (a ordem delas nao importa): DTPOSTED e TRNAMT sao
+//     obrigatorias e as demais sao opcionais - TRNTYPE vira 'OTHER' e
+//     CHKNUM/MEMO ficam vazios;
+//   - ID e' ignorado de proposito: "extratos.id" e INTEGER AUTOINCREMENT,
+//     entao a chave do arquivo e' do exportador e nao da tabela;
+//   - data em AAAA-MM-DD (ou AAAAMMDD) e valor com PONTO decimal, como no
+//     modelo: virgula nao e' numero para a coluna NUMERIC e a linha seria
+//     gravada como texto no lugar do numero - por isso ela vira ignorada.
+// AIgnorados conta as linhas puladas por data ou valor invalidos. Pode
+// levantar excecao (arquivo ilegivel ou cabecalho fora do contrato); o
+// dialogo do erro e' do chamador.
+function LerCsv(const AFileName: string; out AIgnorados: Integer): TRegistrosOfx;
+
 implementation
 
 uses
   StrUtils;
+
+type
+  // Campos de uma linha do CSV, depois do corte. Tipo da IMPLEMENTACAO de
+  // proposito: so' o leitor de CSV divide linha, entao ele nao e' contrato de
+  // quem chama.
+  TCamposCsv = array of string;
 
 const
   // Windows-1252: as 32 posicoes que nao sao Latin-1 (0x80..0x9F). Todo o
@@ -389,6 +417,255 @@ begin
   end;
   // O ultimo bloco do arquivo so' fecha aqui
   FecharBloco;
+
+  SetLength(registros, total);
+  Result := registros;
+end;
+
+// ---------------------------------------------------------------- CSV
+
+// Corta uma linha do CSV em campos. Aspas so' contam quando ABREM o campo (e'
+// a regra do formato): dentro delas o separador vale como texto e o par ""
+// vira uma aspas literal. Uma aspas avulsa no MEIO do texto - comum em memo de
+// banco (Pix recebido: "Cp :...") - nao fecha nada, justamente porque o campo
+// nao comecou com aspas; sem esse detalhe aquelas memorias engoliriam o resto
+// da linha. Cada campo sai com as aspas de protecao ja' tiradas e com Trim.
+function SepararCamposCsv(const ALinha: string): TCamposCsv;
+var
+  i, comeco, total: Integer;
+  emAspas: Boolean;
+
+  // O texto de comeco ate AFim (bordas inclusas), sem as aspas de protecao -
+  // que so' existem quando o campo COMECA e TERMINA com aspas.
+  function CampoTexto(AFim: Integer): string;
+  begin
+    Result := Trim(Copy(ALinha, comeco, AFim - comeco + 1));
+    if (Length(Result) >= 2) and (Result[1] = '"') and
+      (Result[Length(Result)] = '"') then
+      Result := StringReplace(Copy(Result, 2, Length(Result) - 2), '""', '"',
+        [rfReplaceAll]);
+  end;
+
+begin
+  Result := nil;
+  total := 0;
+  comeco := 1;
+  emAspas := False;
+  i := 1;
+  while i <= Length(ALinha) do
+  begin
+    if emAspas then
+    begin
+      if ALinha[i] = '"' then
+      begin
+        if (i < Length(ALinha)) and (ALinha[i + 1] = '"') then
+          Inc(i) // "" e' aspas literal: pula a segunda
+        else
+          emAspas := False;
+      end;
+    end
+    else if (ALinha[i] = '"') and (i = comeco) then
+      emAspas := True // so' a aspas da virgula inicial abre o campo
+    else if ALinha[i] = ';' then
+    begin
+      SetLength(Result, total + 1);
+      Result[total] := CampoTexto(i - 1);
+      Inc(total);
+      comeco := i + 1;
+    end;
+    Inc(i);
+  end;
+  SetLength(Result, total + 1);
+  Result[total] := CampoTexto(Length(ALinha));
+end;
+
+// Uma data do CSV nos DOIS formatos que a tabela aceita - AAAA-MM-DD (o do
+// modelo) e AAAAMMDD (o do OFX) - e que o CALENDARIO confirma: nao basta ter
+// 8 ou 10 caracteres, "2025-13-40" nao fecha mes nenhum.
+function EhDataCsv(const ATexto: string): Boolean;
+var
+  numeros, ano, mes, dia: Integer;
+  data: TDateTime;
+begin
+  Result := False;
+  if (Length(ATexto) = 10) and (ATexto[5] = '-') and (ATexto[8] = '-') then
+    numeros := StrToIntDef(Copy(ATexto, 1, 4) + Copy(ATexto, 6, 2) +
+      Copy(ATexto, 9, 2), 0)
+  else if Length(ATexto) = 8 then
+    numeros := StrToIntDef(ATexto, 0)
+  else
+    Exit;
+  if numeros <= 0 then
+    Exit;
+  ano := numeros div 10000;
+  mes := (numeros div 100) mod 100;
+  dia := numeros mod 100;
+  Result := TryEncodeDate(ano, mes, dia, data);
+end;
+
+// Um TRNAMT no formato do modelo: [sinal] digitos [. digitos] - o PONTO e' o
+// separador decimal e nada mais vale. Virgula (o formato do sistema) e' aceita
+// DE PROPOSITO: guardar "1.234,56" na coluna NUMERIC deixaria texto no lugar
+// do numero, entao a linha nao passa daqui e vira ignorada.
+function EhNumeroCsv(const ATexto: string): Boolean;
+var
+  i, ponto: Integer;
+  digitos, digitosDepois: Boolean;
+begin
+  Result := False;
+  if ATexto = '' then
+    Exit;
+  ponto := 0;
+  digitos := False;
+  digitosDepois := False;
+  for i := 1 to Length(ATexto) do
+  begin
+    if ATexto[i] in ['0'..'9'] then
+    begin
+      digitos := True;
+      if ponto > 0 then
+        digitosDepois := True;
+    end
+    else if ATexto[i] = '.' then
+    begin
+      if ponto > 0 then
+        Exit; // dois pontos nao fecha numero nenhum
+      Inc(ponto);
+    end
+    else if (ATexto[i] <> '+') and (ATexto[i] <> '-') then
+      Exit // virgula, espaco ou letra: fora do formato do modelo
+    else if i > 1 then
+      Exit; // sinal: so' na frente, e a frente ja' passou
+  end;
+  // "12." nao tem fracao e "." sozinho nao e' numero: os dois o
+  // StrToFloatDef do importador leria como zero.
+  Result := digitos and ((ponto = 0) or digitosDepois);
+end;
+
+function LerCsv(const AFileName: string; out AIgnorados: Integer): TRegistrosOfx;
+var
+  texto, nome: string;
+  campos: TCamposCsv;
+  registros: TRegistrosOfx;
+  reg: TRegistroOfx;
+  colTipo, colData, colValor, colDoc, colMemo: Integer;
+  total, capacidade, p, comeco: Integer;
+  cabecalho: Boolean;
+
+  // O campo de um indice que a linha talvez nao tenha: arquivo com menos
+  // colunas que o cabecalho nao pode derrubar a leitura, e o que faltar e'
+  // o mesmo que o leitor OFX faz com a tag ausente - fica vazio.
+  function CampoEm(const ATodos: TCamposCsv; AIndice: Integer): string;
+  begin
+    if (AIndice >= 0) and (AIndice <= High(ATodos)) then
+      Result := ATodos[AIndice]
+    else
+      Result := '';
+  end;
+
+  // Uma linha do arquivo: a PRIMEIRA nao vazia e' o cabecalho, as demais
+  // viram linha de "extratos" quando passam na regua de data e de valor.
+  procedure ProcessarLinha(const ATexto: string);
+  var
+    k: Integer;
+  begin
+    campos := SepararCamposCsv(ATexto);
+    if (Length(campos) = 1) and (campos[0] = '') then
+      Exit; // linha em branco
+
+    if not cabecalho then
+    begin
+      // E' do cabecalho que sai a ORDEM das colunas - le-las pelo nome e' o
+      // que deixa o arquivo aceitar as colunas trocadas sem virar lixo.
+      cabecalho := True;
+      colTipo := -1;
+      colData := -1;
+      colValor := -1;
+      colDoc := -1;
+      colMemo := -1;
+      for k := 0 to High(campos) do
+      begin
+        nome := UpperCase(Trim(campos[k]));
+        if nome = 'TRNTYPE' then
+          colTipo := k
+        else if nome = 'DTPOSTED' then
+          colData := k
+        else if nome = 'TRNAMT' then
+          colValor := k
+        else if (nome = 'CHKNUM') or (nome = 'CHECKNUM') then
+          colDoc := k
+        else if nome = 'MEMO' then
+          colMemo := k;
+      end;
+      if (colData < 0) or (colValor < 0) then
+        raise Exception.Create('O arquivo não é um CSV de transações no ' +
+          'formato esperado: separador ";" e uma primeira linha de cabeçalho ' +
+          'com as colunas DTPOSTED e TRNAMT.');
+      Exit;
+    end;
+
+    reg.TrnType := CampoEm(campos, colTipo);
+    reg.DtPosted := CampoEm(campos, colData);
+    reg.TrnAmt := CampoEm(campos, colValor);
+    reg.Memo := CampoEm(campos, colMemo);
+    reg.ChkNum := CampoEm(campos, colDoc);
+
+    // Data e valor sao as duas colunas NOT NULL da tabela, e as duas passam
+    // pela regua do calendario e do formato numerico antes de virar linha.
+    if (reg.DtPosted = '') or (reg.TrnAmt = '') or
+      (not EhDataCsv(reg.DtPosted)) or (not EhNumeroCsv(reg.TrnAmt)) then
+    begin
+      Inc(AIgnorados);
+      Exit;
+    end;
+
+    // Coluna trntype e' NOT NULL mas o arquivo pode nao informar o tipo
+    if reg.TrnType = '' then
+      reg.TrnType := 'OTHER';
+
+    // Cresce em dobro (o mesmo cuidado do LerOfx): SetLength linha a linha
+    // ficaria o tempo inteiro no realocar do array.
+    if total >= capacidade then
+    begin
+      if capacidade = 0 then
+        capacidade := 64
+      else
+        capacidade := capacidade * 2;
+      SetLength(registros, capacidade);
+    end;
+    registros[total] := reg;
+    Inc(total);
+  end;
+
+begin
+  SetLength(registros, 0);
+  total := 0;
+  capacidade := 0;
+  AIgnorados := 0;
+  cabecalho := False;
+  colTipo := -1;
+  colData := -1;
+  colValor := -1;
+  colDoc := -1;
+  colMemo := -1;
+
+  texto := LerTextoUtf8(AFileName);
+  // As quebras: o modelo usa CRLF, mas CSV gravado em Unix ou editado a maos
+  // pode trazer LF - e um CR solto tambem vira linha, como nos arquivos
+  // antigos. Normalizar aqui e' o que deixa UM so' codigo de leitura.
+  texto := StringReplace(texto, #13#10, #10, [rfReplaceAll]);
+  texto := StringReplace(texto, #13, #10, [rfReplaceAll]);
+
+  comeco := 1;
+  for p := 1 to Length(texto) do
+    if texto[p] = #10 then
+    begin
+      ProcessarLinha(Copy(texto, comeco, p - comeco));
+      comeco := p + 1;
+    end;
+  // A ultima linha so' existe aqui quando o arquivo nao fecha com a quebra
+  if comeco <= Length(texto) then
+    ProcessarLinha(Copy(texto, comeco, Length(texto) - comeco + 1));
 
   SetLength(registros, total);
   Result := registros;

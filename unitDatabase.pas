@@ -32,15 +32,31 @@ function IsAccountsDatabase(const AFileName: string): Boolean;
 // novo - reimportar o mesmo arquivo nao duplica nada. Duas linhas iguais no
 // PROPRIO arquivo tambem sao respeitadas: a linha gravada sai da comparacao
 // e a segunda igual entra (o arquivo diz que sao duas).
-// Junto com as linhas novas vai o balanco FINAL do periodo, gravado em
-// "saldos" (ver GravarSaldoFimPeriodo): e' a mesma transacao, entao ou tudo
-// grava ou nada grava. Sem registro novo o saldo nao e' recalculado - nao ha'
-// o que mudar, e o chamador recebe AJaExistiam > 0 com 0 devolvido.
+// Junto com as linhas novas vao os balancos de "saldos", UMA LINHA POR MES
+// coberto pelo arquivo (ver GravarSaldosDoPeriodo): e' a mesma transacao,
+// entao ou tudo grava ou nada grava. Sem registro novo o saldo nao e'
+// recalculado - nao ha' o que mudar, e o chamador recebe AJaExistiam > 0 com
+// 0 devolvido.
 // Devolve quantas linhas entraram; em AJaExistiam, quantas do arquivo ja'
 // estavam gravadas.
 // Erro de banco propaga: o dialogo e' do chamador (que tambem sabe o arquivo).
 function ImportarExtratos(AConn: TSQLite3Connection; AAccountId: Integer;
   const ARegistros: TRegistrosOfx; out AJaExistiam: Integer): Integer;
+
+// Importa um CSV de transacoes (menu "Importar Transacoes (CSV)") como uma
+// SUBSTITUICAO do historico da conta: as tabelas "extratos" e "saldos" sao
+// limpas INTEIRAS - as de TODAS as contas, porque o CSV nao traz conta nenhuma
+// e e' ele que passa a valer - e o arquivo vira o conteudo novo.
+// Por isso nao ha' o que comparar com o que ja' estava gravado (a limpeza ja'
+// garante que nao vai haver copia) e os balancos de "saldos" sao os MESMOS do
+// importador de OFX/OFC (ver GravarSaldosDoPeriodo): UMA LINHA POR MES em que
+// o arquivo tem transacao, acumulada do comeco do arquivo ate' o fim de cada
+// mes - com a abertura zerada, ja' que a "saldos" acabou de ficar vazia.
+// Os dois DELETEs rodam na MESMA transacao das linhas novas, ANTES da
+// gravacao: se o arquivo nao tiver o que gravar (ou falhar no meio), o
+// rollback leva a limpeza junto e o database fica como estava.
+function ImportarCsv(AConn: TSQLite3Connection; AAccountId: Integer;
+  const ARegistros: TRegistrosOfx): Integer;
 
 implementation
 
@@ -285,43 +301,21 @@ begin
     Result := Format('%.4d-%.2d-%.2d', [ano, mes, dia]);
 end;
 
-// Grava em "saldos" o balanco FINAL do periodo coberto pelo arquivo que
-// acabou de ser importado: a abertura (o saldo registrado ANTES do 1o dia do
-// 1o mes do arquivo) mais a soma de TODAS as linhas de "extratos" da conta
-// dentro do periodo - nao so' as que acabaram de entrar, porque o balanco de
-// um fim de mes e' o acumulado ate' la'. E' a MESMA conta que a coluna Saldo
-// da grade calcula, so' que do 1o ao ultimo mes do arquivo em vez de um mes
-// so'.
-//
-// O enddate e' o ULTIMO DIA do ultimo mes do arquivo (nao o dia da ultima
-// transacao): e' o fechamento do periodo, o formato que o cbYear e as guias
-// de mes leem de "saldos". Ja' existindo saldo da MESMA conta com esse
-// MESMO enddate, o balance e' ATUALIZADO - uma linha por fim de mes, entao
-// reimportar refaz o periodo em vez de acumular linha nova.
-//
-// Roda DENTRO da transacao da importacao, antes do commit: ou as linhas e o
-// balanco gravam juntos, ou nada grava.
-//
-// O periodo vem pronto do chamador (PeriodoImportado): e' o MESMO recorte
-// usado para comparar as linhas com o que ja' esta' gravado, entao as duas
-// decisoes - o que entra e o que fecha - enxergam o mesmo arquivo.
-
 // Periodo coberto pelo arquivo, em chaves que o proprio SQL usa: comeca no
-// 1o dia do 1o mes e fecha no ULTIMO DIA do ultimo mes das datas
-// IMPORTADAS - o fechamento de meses COMPLETOS, mesmo que o arquivo traga
-// so' algumas datas. O MES do periodo tambem sai daqui: e' o que corta
-// "extratos" na comparacao das linhas e na soma do saldo do fim de periodo.
-// Devolve False quando nenhuma data do arquivo da para ler: sem periodo nao
-// ha' o que fechar nem o que comparar.
+// 1o dia do 1o mes e vai ate' o ULTIMO MES das datas IMPORTADAS - o
+// fechamento de meses COMPLETOS, mesmo que o arquivo traga so' algumas
+// datas. O MES do periodo tambem sai daqui: e' o que corta "extratos" tanto
+// na comparacao das linhas quanto na soma do saldo de cada fim de mes.
+// Devolve False quando nenhuma data do arquivo da' para ler: sem periodo
+// nao ha' o que comparar nem o que fechar.
 function PeriodoImportado(const ARegistros: TRegistrosOfx; out AInicio,
-  AFim, AMesInicial, AMesFinal: string): Boolean;
+  AMesInicial, AMesFinal: string): Boolean;
 var
   i: Integer;
   data, primeiraData, ultimaData: string;
 begin
   Result := False;
   AInicio := '';
-  AFim := '';
   AMesInicial := '';
   AMesFinal := '';
   // So' datas validas decidem o periodo: uma data quebrada no meio do
@@ -340,9 +334,6 @@ begin
       ultimaData := data;
   end;
   if primeiraData = '' then
-    Exit;
-  AFim := UltimoDiaDoMes(ultimaData);
-  if AFim = '' then
     Exit;
   AInicio := Copy(primeiraData, 1, 8) + '01';
   AMesInicial := Copy(primeiraData, 1, 4) + Copy(primeiraData, 6, 2);
@@ -393,6 +384,42 @@ begin
     AMemo;
 end;
 
+// O MES (AAAAMM) de uma linha de "extratos", em SQL: trata os DOIS formatos
+// de dtposted - AAAAMMDD (o que o leitor de OFX grava) e AAAA-MM-DD (o que
+// a grade grava) - e e' o MESMO recorte que a tela de extratos usa, entao o
+// saldo gravado por aqui bate com o que a coluna Saldo mostra. As 4 casas
+// sao texto de largura fixa, entao BETWEEN e ORDER BY ordenam como data.
+function SqlMesDtposted: string;
+begin
+  Result := '(substr(dtposted, 1, 4) ||' +
+    ' (CASE WHEN substr(dtposted, 5, 1) = ''-'' THEN substr(dtposted, 6, 2)' +
+    ' ELSE substr(dtposted, 5, 2) END))';
+end;
+
+// Os meses (AAAAMM) em que o ARQUIVO tem alguma transacao, em ordem e sem
+// repetir. e' so' esses que viram linha em "saldos": um mes sem transacao
+// nao tem fechamento que gravar, e a abertura mais a soma ate' o proximo
+// mes ja' cobre o intervalo. Data invalida nao conta - e' a MESMA regula
+// que define o periodo - e a lista nasce ordenada com dupIgnore, que e' o
+// que entrega os meses distintos sem precisar de GROUP BY.
+function MesesDoArquivo(const ARegistros: TRegistrosOfx): TStringList;
+var
+  i: Integer;
+  data: string;
+begin
+  Result := TStringList.Create;
+  Result.Sorted := True;
+  Result.Duplicates := dupIgnore;
+  Result.CaseSensitive := True;
+  for i := 0 to High(ARegistros) do
+  begin
+    data := DataIsoDtposted(ARegistros[i].DtPosted);
+    if data = '' then
+      Continue;
+    Result.Add(Copy(data, 1, 4) + Copy(data, 6, 2));
+  end;
+end;
+
 // As linhas de "extratos" da conta ja' gravadas DENTRO do periodo do
 // arquivo, uma entrada da lista por linha: e' contra essa lista que cada
 // registro do arquivo e' comparado. A lista vem ordenada (IndexOf binario) e
@@ -415,9 +442,7 @@ begin
     consulta.Transaction := AConn.Transaction;
     consulta.SQL.Text := 'SELECT dtposted, CAST(trnamt AS REAL) AS valor,' +
       ' memo FROM extratos WHERE account_id = ' + IntToStr(AAccountId) +
-      ' AND (substr(dtposted, 1, 4) ||' +
-      ' (CASE WHEN substr(dtposted, 5, 1) = ''-'' THEN substr(dtposted, 6, 2)' +
-      ' ELSE substr(dtposted, 5, 2) END))' +
+      ' AND ' + SqlMesDtposted +
       ' BETWEEN ' + QuotedStr(AMesInicial) + ' AND ' + QuotedStr(AMesFinal) +
       ';';
     consulta.Open;
@@ -434,11 +459,41 @@ begin
   end;
 end;
 
-procedure GravarSaldoFimPeriodo(AConn: TSQLite3Connection; AAccountId: Integer;
-  const AInicio, AFim, AMesInicial, AMesFinal: string);
+// Grava em "saldos" UMA LINHA POR MES coberto pelo arquivo que acabou de ser
+// importado: o fechamento de cada mes (o ULTIMO DIA dele, e nao o dia da
+// transacao) com o balanco acumulado ate' la' - a abertura (o saldo
+// registrado ANTES do 1o dia do 1o mes do arquivo) mais a soma de TODAS as
+// linhas de "extratos" da conta do comeco do periodo ate' o fim DESTE mes.
+// Nao so' as linhas que acabaram de entrar, porque o balanco de um fim de
+// mes e' o acumulado ate' la'. E' a MESMA conta que a coluna Saldo da grade
+// calcula, so' que parcelada por mes.
+//
+// So' os meses em que o ARQUIVO tem transacao viram linha (ver
+// MesesDoArquivo): um mes sem transacao nao tem fechamento que gravar, e o
+// saldo do proximo mes com linha ja' carrega o acumulado do intervalo -
+// entao a serie nao perde nada por pular o mes vazio.
+//
+// O enddate e' o que o cbYear e as guias de mes leem de "saldos". Ja'
+// existindo saldo da MESMA conta com esse MESMO enddate, o balance e'
+// ATUALIZADO - uma linha por fim de mes, entao reimportar refaz o periodo
+// em vez de acumular linha nova.
+//
+// Roda DENTRO da transacao da importacao, antes do commit: ou as linhas e
+// os balancos gravam juntos, ou nada grava.
+//
+// O periodo vem pronto do chamador (PeriodoImportado): e' o MESMO recorte
+// usado para comparar as linhas com o que ja' esta' gravado, entao as duas
+// decisoes - o que entra e o que fecha - enxergam o mesmo arquivo.
+// O fim do periodo nao vem como parametro: a soma de cada mes fecha no MES
+// que esta' sendo gravado, e os meses sao os do PROPRIO arquivo (por isso o
+// ARegistros) - o limite superior ja' esta' embutido na volta.
+procedure GravarSaldosDoPeriodo(AConn: TSQLite3Connection; AAccountId: Integer;
+  const ARegistros: TRegistrosOfx; const AInicio, AMesInicial: string);
 var
   trans: TSQLTransaction;
-  sqlAbertura, sqlSoma, sqlValor: string;
+  meses: TStringList;
+  i: Integer;
+  mes, fimDoMes, sqlAbertura, sqlSoma, sqlValor: string;
 begin
   trans := AConn.Transaction;
   if trans = nil then
@@ -446,46 +501,66 @@ begin
 
   // Abertura: o saldo da conta registrado antes do periodo, mais recente
   // primeiro e com o MAIOR id desempatando - a mesma regra do saldo anterior
-  // da tela (ConsultarSaldo). Sem registro anterior, comeca do zero.
+  // da tela (ConsultarSaldo). Sem registro anterior, comeca do zero. Todos
+  // os enddate que este procedimento grava sao do PROPRIO periodo (>= o
+  // AInicio daqui), entao nenhuma linha gravada nesta volta entra nessa
+  // leitura e a abertura fica a mesma do primeiro mes ao ultimo.
   sqlAbertura := 'COALESCE((SELECT CAST(balance AS REAL) FROM saldos' +
     ' WHERE account_id = ' + IntToStr(AAccountId) +
     ' AND enddate < ' + QuotedStr(AInicio) +
     ' ORDER BY enddate DESC, id DESC LIMIT 1), 0)';
 
-  // Soma do periodo por MES (AAAAMM), que e' o unico nivel em que o
-  // periodo faz sentido (as bordas sao dia 1 e ultimo dia de mes). O
-  // concatena trata os DOIS formatos de dtposted - AAAAMMDD (o do OFX) e
-  // AAAA-MM-DD (o da grade) - pelo MESMO CASE do filtro da tela, entao a
-  // soma bate com o que a coluna Saldo exibe. COALESCE cobre o periodo sem
-  // nenhuma linha, cujo SUM e' NULL.
-  sqlSoma := 'COALESCE((SELECT SUM(CAST(trnamt AS REAL)) FROM extratos' +
-    ' WHERE account_id = ' + IntToStr(AAccountId) +
-    ' AND (substr(dtposted, 1, 4) ||' +
-    ' (CASE WHEN substr(dtposted, 5, 1) = ''-'' THEN substr(dtposted, 6, 2)' +
-    ' ELSE substr(dtposted, 5, 2) END))' +
-    ' BETWEEN ' + QuotedStr(AMesInicial) + ' AND ' + QuotedStr(AMesFinal) +
-    '), 0)';
+  meses := MesesDoArquivo(ARegistros);
+  try
+    for i := 0 to meses.Count - 1 do
+    begin
+      mes := meses[i];
+      // 'AAAAMM' vira data so' para achar o ultimo dia: 30/31 e bissexto
+      // sao resolvidos ali, e o '' que volta para mes impossivel (0000 ou
+      // 13) e' justamente um mes que nao vira linha.
+      fimDoMes := UltimoDiaDoMes(Copy(mes, 1, 4) + '-' + Copy(mes, 5, 2) +
+        '-01');
+      if fimDoMes = '' then
+        Continue;
 
-  // O CAST AS REAL e' o mesmo motivo do CAST da grade: NUMERIC sem ele o
-  // driver le como inteiro e os centavos somem na gravacao.
-  sqlValor := 'CAST((' + sqlAbertura + ') + (' + sqlSoma + ') AS REAL)';
+      // A soma e' ACUMULADA ate' o fim DESTE mes, nao so' do mes: o balanco
+      // gravado e' o da conta ate' la', que e' o que a coluna Saldo mostra.
+      // O limite inferior e' o comeco do periodo - a MESMA janela com que as
+      // linhas foram comparadas - e o superior e' o MES, que ordena como
+      // data. COALESCE cobre o periodo sem nenhuma linha, cujo SUM e' NULL.
+      sqlSoma := 'COALESCE((SELECT SUM(CAST(trnamt AS REAL)) FROM extratos' +
+        ' WHERE account_id = ' + IntToStr(AAccountId) +
+        ' AND ' + SqlMesDtposted +
+        ' BETWEEN ' + QuotedStr(AMesInicial) + ' AND ' + QuotedStr(mes) +
+        '), 0)';
 
-  // Atualiza primeiro e deixa o INSERT cobrir o caso de nao haver linha.
-  // A subconsulta da abertura le "saldos" junto com o UPDATE, mas o
-  // registro que esta' sendo atualizado fica fora da leitura (o dele e' o
-  // fim do periodo, sempre posterior ao < inicio da abertura), entao nao ha'
-  // auto-referencia - e a soma e' de "extratos", tabela outra.
-  AConn.ExecuteDirect('UPDATE saldos SET balance = ' + sqlValor +
-    ' WHERE account_id = ' + IntToStr(AAccountId) +
-    ' AND enddate = ' + QuotedStr(AFim) + ';', trans);
+      // O CAST AS REAL e' o mesmo motivo do CAST da grade: NUMERIC sem ele o
+      // driver le como inteiro e os centavos somem na gravacao.
+      sqlValor := 'CAST((' + sqlAbertura + ') + (' + sqlSoma + ') AS REAL)';
 
-  // O NOT EXISTS e' o que segura UMA linha por (conta, fim de mes) mesmo
-  // com as duas sentencas na mesma transacao: se o UPDATE achou, nao insere.
-  AConn.ExecuteDirect('INSERT INTO saldos (account_id, balance, enddate)' +
-    ' SELECT ' + IntToStr(AAccountId) + ', ' + sqlValor + ', ' +
-    QuotedStr(AFim) + ' FROM (SELECT 1 AS um)' +
-    ' WHERE NOT EXISTS (SELECT 1 FROM saldos WHERE account_id = ' +
-    IntToStr(AAccountId) + ' AND enddate = ' + QuotedStr(AFim) + ');', trans);
+      // Atualiza primeiro e deixa o INSERT cobrir o caso de nao haver linha.
+      // A subconsulta da abertura le "saldos" junto com o UPDATE, mas o
+      // registro que esta' sendo atualizado fica fora da leitura (o dele e'
+      // o fim de um mes do periodo, sempre posterior ao < inicio da
+      // abertura), entao nao ha' auto-referencia - e a soma e' de
+      // "extratos", tabela outra.
+      AConn.ExecuteDirect('UPDATE saldos SET balance = ' + sqlValor +
+        ' WHERE account_id = ' + IntToStr(AAccountId) +
+        ' AND enddate = ' + QuotedStr(fimDoMes) + ';', trans);
+
+      // O NOT EXISTS e' o que segura UMA linha por (conta, fim de mes) mesmo
+      // com as duas sentencas na mesma transacao: se o UPDATE achou, nao
+      // insere.
+      AConn.ExecuteDirect('INSERT INTO saldos (account_id, balance, enddate)' +
+        ' SELECT ' + IntToStr(AAccountId) + ', ' + sqlValor + ', ' +
+        QuotedStr(fimDoMes) + ' FROM (SELECT 1 AS um)' +
+        ' WHERE NOT EXISTS (SELECT 1 FROM saldos WHERE account_id = ' +
+        IntToStr(AAccountId) + ' AND enddate = ' + QuotedStr(fimDoMes) +
+        ');', trans);
+    end;
+  finally
+    meses.Free;
+  end;
 end;
 
 function ImportarExtratos(AConn: TSQLite3Connection; AAccountId: Integer;
@@ -496,7 +571,7 @@ var
   reg: TRegistroOfx;
   chave: string;
   temPeriodo: Boolean;
-  periodoInicio, periodoFim, mesInicial, mesFinal: string;
+  periodoInicio, mesInicial, mesFinal: string;
   existentes: TStringList;
 begin
   Result := 0;
@@ -510,10 +585,10 @@ begin
 
   // O periodo do arquivo e' a referencia das DUAS coisas que vem a seguir:
   // o recorte com que cada linha e' comparada com o que ja' esta' gravado e
-  // o fim de periodo do saldo. Sem periodo legivel nao ha' o que comparar -
-  // entao toda linha entra.
-  temPeriodo := PeriodoImportado(ARegistros, periodoInicio, periodoFim,
-    mesInicial, mesFinal);
+  // a janela em que os saldos de cada fim de mes somam. Sem periodo legivel
+  // nao ha' o que comparar - entao toda linha entra.
+  temPeriodo := PeriodoImportado(ARegistros, periodoInicio, mesInicial,
+    mesFinal);
   if temPeriodo then
     existentes := LinhasDoPeriodo(AConn, AAccountId, mesInicial, mesFinal)
   else
@@ -549,13 +624,13 @@ begin
         Inc(Result);
       end;
 
-      // O balanco do fim do periodo vai na MESMA transacao das linhas: as
+      // O balanco de cada fim de mes vai na MESMA transacao das linhas: as
       // duas coisas (extratos e saldos) gravam juntas ou nada grava. Sem
       // registro novo nao ha' o que recalcular: o saldo ja' reflete as
       // linhas que estao gravadas, e o chamador avisa que nada mudou.
       if (Result > 0) and temPeriodo then
-        GravarSaldoFimPeriodo(AConn, AAccountId, periodoInicio, periodoFim,
-          mesInicial, mesFinal);
+        GravarSaldosDoPeriodo(AConn, AAccountId, ARegistros, periodoInicio,
+          mesInicial);
 
       // Uma transacao so' para a importacao inteira: ou entra tudo, ou nada.
       // O Commit fecha o que a interface tem aberto nessa transacao (opcao
@@ -573,6 +648,42 @@ begin
   finally
     existentes.Free;
   end;
+end;
+
+function ImportarCsv(AConn: TSQLite3Connection; AAccountId: Integer;
+  const ARegistros: TRegistrosOfx): Integer;
+var
+  trans: TSQLTransaction;
+  jaExistiam: Integer;
+begin
+  Result := 0;
+  // Nada a gravar tambem e' nada a limpar: apagar as duas tabelas para no
+  // fim nao gravar coisa nenhuma so' destruiria dado sem motivo.
+  if Length(ARegistros) = 0 then
+    Exit;
+
+  trans := AConn.Transaction;
+  if trans = nil then
+    raise Exception.Create('A conexao nao tem transacao para gravar o extrato.');
+
+  // A limpeza vem ANTES e na MESMA transacao da gravacao. O INSERT das
+  // linhas novas e o balanco de cada fim de mes entao rodam em cima de
+  // "extratos" e "saldos" vazias - e' o que zera tambem a abertura que
+  // GravarSaldosDoPeriodo le de "saldos".
+  try
+    AConn.ExecuteDirect('DELETE FROM saldos;', trans);
+    AConn.ExecuteDirect('DELETE FROM extratos;', trans);
+  except
+    if trans.Active then
+      trans.Rollback;
+    raise;
+  end;
+
+  // Gravacao, balancos de fim de mes e commit sao o caminho ja' testado do
+  // OFX/OFC. Depois da limpeza LinhasDoPeriodo encontra tabela vazia, entao a
+  // dedup de ImportarExtratos nao retira linha nenhuma - e AJaExistiam sai
+  // zerado, que e' justamente o que se espera de uma substituicao.
+  Result := ImportarExtratos(AConn, AAccountId, ARegistros, jaExistiam);
 end;
 
 end.

@@ -22,10 +22,13 @@
         a reimportacao do MESMO arquivo nao repete nada (cada registro e'
         comparado com o que ja' esta' gravado no periodo do arquivo e o
         aviso diz que os dados ja' existem), extrato em ANSI vira UTF-8 no
-        arquivo e o balanco do fim do periodo e' gravado em "saldos"
+        arquivo e o saldo de CADA MES coberto e' gravado em "saldos"
     [10] "Voltar" da tbContas -> cbAccount e' remontado e reflete a conta
         excluida pela propria tela de gestao enquanto o app estava aberto
-    [11] Nenhum crash registrado no log de eventos do Windows (WER)
+    [11] Importar Transacoes (CSV) (miImpTrans) -> limpa "extratos" e
+        "saldos" e o arquivo CSV vira o conteudo novo, com o saldo de CADA
+        MES do arquivo gravado pelas MESMAS regras do miImport
+    [12] Nenhum crash registrado no log de eventos do Windows (WER)
 
   Sai com código 0 quando tudo passa, 1 quando há alguma falha.
   As mensagens "arquivo(linha,col) severidade: mensagem" alimentam o
@@ -482,6 +485,24 @@ function Get-LfmBlock([string]$Texto, [string]$Objeto) {
     return $m.Value
 }
 
+# Le do .lfm o Caption de um objeto do form. Devolve '' quando nao achar.
+# O texto vem do ARQUIVO e nao de uma constante escrita no .ps1: este nao tem
+# BOM e o PowerShell o le como ANSI, entao nunca daria para casar byte a byte
+# com o UTF-8 do .lfm (MenuId compara o UTF-16 da aplicacao). E, se o rotulo
+# do form mudar, o teste acompanha sozinho.
+function Get-LfmCaption([string]$Texto, [string]$Objeto) {
+    if ($Texto -eq '') { return '' }
+    # A indentacao do Caption e' MAIOR que a do objeto, entao a ancora e' o
+    # recuo do PROPRIO objeto e o resto da linha: casar so' com o recuo (como
+    # faz Get-LfmBlock com o "end") passaria reto pelo Caption de dentro e
+    # pegaria o de um objeto la em baixo.
+    $padrao = '(?ms)^([ \t]*)object ' + [regex]::Escape($Objeto) +
+        '.*?^\1[ \t]+Caption = ''([^'']*)'''
+    $m = [regex]::Match($Texto, $padrao)
+    if (-not $m.Success) { return '' }
+    return $m.Groups[2].Value
+}
+
 # Le as colunas declaradas num bloco de grade: cada "item" do "Columns" vira
 # um par (FieldName, Title.Caption). A ordem das propriedades DENTRO do item
 # nao entra na conta - o Lazarus IDE reescreve o .lfm em ordem canonica ao
@@ -742,6 +763,21 @@ function Wait-Interface([IntPtr]$Main, [bool]$Esperado) {
 # esperar o aviso aparecer (nao pode ser lido junto com o dialogo de arquivo).
 function Invoke-Importar($Process, [string]$Arquivo) {
     $dlg = Invoke-MenuFileDialog $Process 'Importar OFC/OFX'
+    if ($dlg -eq [IntPtr]::Zero) { return [IntPtr]::Zero }
+    $edit = Set-FileDialogName $dlg $Arquivo
+    if ($edit -eq [IntPtr]::Zero) { return [IntPtr]::Zero }
+    if (-not (Wait-DialogClosed $dlg)) { return [IntPtr]::Zero }
+    Wait-Warning ([uint32]$Process.Id)
+}
+
+# Importa um CSV pelo menu "Importar Transacoes (CSV)" (AMenuText e' o Caption
+# exato do item, lido do .lfm por Get-LfmCaption) e devolve o dialogo de
+# resultado (MessageDlg) aberto, ou Zero quando algo travou no meio do caminho.
+# A sequencia e' a mesma de Invoke-Importar: menu -> dialogo de arquivo -> nome
+# -> esperar fechar -> esperar o resultado.
+function Invoke-ImportarCsv($Process, [string]$Arquivo, [string]$AMenuText) {
+    if ($AMenuText -eq '') { return [IntPtr]::Zero }
+    $dlg = Invoke-MenuFileDialog $Process $AMenuText
     if ($dlg -eq [IntPtr]::Zero) { return [IntPtr]::Zero }
     $edit = Set-FileDialogName $dlg $Arquivo
     if ($edit -eq [IntPtr]::Zero) { return [IntPtr]::Zero }
@@ -1036,7 +1072,7 @@ if ($dbExisted) {
 
 try {
     # ------------------------------------------------ [1] compilação/lint
-    Write-Banner '[1/11] Compilacao e lint (lazbuild -B)'
+    Write-Banner '[1/12] Compilacao e lint (lazbuild -B)'
     if ($SkipLint) {
         Write-Output '   (pulado por -SkipLint)'
     }
@@ -1553,7 +1589,7 @@ try {
         'gridTransPrepareCanvas nao colore a coluna saldo')
 
     # ------------------------------------------------ [2] cria o banco
-    Write-Banner '[2/11] Sem banks.db -> deve criar o arquivo'
+    Write-Banner '[2/12] Sem banks.db -> deve criar o arquivo'
     if (Test-Path $db) { Remove-Item $db -Force }
     $r = Invoke-App $RunSeconds
     Test-NoCrash $r 'aplicacao permanece viva (sem crash)'
@@ -1567,7 +1603,7 @@ try {
     }
 
     # ------------------------------------------------ [3] já existe
-    Write-Banner '[3/11] Com banks.db -> nao deve recriar nem alterar'
+    Write-Banner '[3/12] Com banks.db -> nao deve recriar nem alterar'
     if (Test-Path $db) {
         $hashBefore = Get-Hash $db
         $r = Invoke-App $RunSeconds
@@ -1579,7 +1615,7 @@ try {
     }
 
     # ------------------------------------------------ [4] DLL ausente
-    Write-Banner '[4/11] Sem sqlite3.dll -> erro deve ser tratado'
+    Write-Banner '[4/12] Sem sqlite3.dll -> erro deve ser tratado'
     if ($SkipDllTest) {
         Write-Output '   (pulado por -SkipDllTest)'
     }
@@ -1608,7 +1644,7 @@ try {
     }
 
     # ------------------------------------------------ [5] miNew -> database
-    Write-Banner '[5/11] Novo Database (miNew) -> cria .db com as 3 tabelas'
+    Write-Banner '[5/12] Novo Database (miNew) -> cria .db com as 3 tabelas'
     if (Test-Path $minewDb) { Remove-Item $minewDb -Force -ErrorAction SilentlyContinue }
     $pNovo = $null
     # Qualquer excecao no fluxo tem de virar FALHA: se escapasse em silencio,
@@ -1736,7 +1772,7 @@ try {
     }
 
     # ------------------------------------------------ [6] miOpen -> abrir .db
-    Write-Banner '[6/11] Abrir Database (miOpen) -> abre o valido e rejeita o invalido'
+    Write-Banner '[6/12] Abrir Database (miOpen) -> abre o valido e rejeita o invalido'
     $pAbrir  = $null
     $hashAbr = $null
     # O passo [4] apaga banks.db e ele so' e recriado no passo final: garante o
@@ -1889,7 +1925,7 @@ try {
     }
 
     # ------------------------------------------------ [7] miClose -> fechar
-    Write-Banner '[7/11] Fechar Database (miClose) -> encerra a conexao com o arquivo'
+    Write-Banner '[7/12] Fechar Database (miClose) -> encerra a conexao com o arquivo'
     $pFecha = $null
     # Mesma protecao dos passos de interface: excecao tem de virar FALHA.
     $ErrorActionPreference = 'Stop'
@@ -2011,7 +2047,7 @@ try {
     }
 
     # ---------------- [8] miList/miGerCon/miGerSal -> tbBancos/tbContas/tbSaldos
-    Write-Banner '[8/11] Voltar sem database -> estado vazio; com database -> fica'
+    Write-Banner '[8/12] Voltar sem database -> estado vazio; com database -> fica'
     $pNav = $null
     # Mesma protecao do passo do miNew: excecao tem de virar FALHA.
     $ErrorActionPreference = 'Stop'
@@ -2472,7 +2508,7 @@ try {
     }
 
     # ------------------------------------ [9] importar OFC/OFX (miImport)
-    Write-Banner '[9/11] Importar OFC/OFX -> linhas novas entram em "extratos"'
+    Write-Banner '[9/12] Importar OFC/OFX -> linhas novas entram em "extratos"'
     $pImp  = $null
     $antes = 0
     # Mesma protecao dos demais passos: excecao tem de virar FALHA.
@@ -2693,11 +2729,11 @@ try {
         Check 'aplicacao viva apos a 1a importacao' (-not $pImp.HasExited)
 
         # Depois do resultado as combos ja foram recarregadas. A importacao
-        # grava UM saldo em "saldos" (o balanco do fim do periodo do
-        # arquivo), mas o ultimo mes do arquivo e' 2025-04 - ano que JA'
-        # estava na lista (2025 e 2026, do passo [8]), entao continuam 2
-        # itens, com 2026 na frente (ordem decrescente) - e a selecao,
-        # devolvida pelo texto salvo, tem de seguir 2026 (indice 0).
+        # grava UM saldo por MES coberto pelo arquivo (os 4 de 2024-01 ate'
+        # 2025-04), e o ano do primeiro deles - 2024 - AINDA NAO estava na
+        # lista, que tinha so' 2025 e 2026 do passo [8]. Agora sao 3 itens,
+        # com 2026 na frente (ordem decrescente) - e a selecao, devolvida
+        # pelo texto salvo, tem de seguir 2026 (indice 0).
         $cbContaB = Find-ComboHwnd $mainImp 212
         $cbAnoB   = Find-ComboHwnd $mainImp 100
         $nContaB  = Get-ComboCount $cbContaB
@@ -2705,8 +2741,8 @@ try {
         $selAnoB  = [int64][UiTest]::Msg($cbAnoB, 0x0147, [IntPtr]::Zero, [IntPtr]::Zero)
         Check 'cbAccount continua com a conta de destino' ($nContaB -eq 1) (
             'itens=' + $nContaB)
-        Check 'cbYear segue com 2 anos (o fim de 2025 nao muda a lista)' (
-            $nAnoB -eq 2) ('itens=' + $nAnoB)
+        Check 'cbYear ganhou 2024 (3 anos: 2026, 2025 e 2024)' (
+            $nAnoB -eq 3) ('itens=' + $nAnoB)
         Check 'cbYear manteve a selecao do usuario (indice 0 = 2026)' (
             $selAnoB -eq 0) ('sel=' + $selAnoB)
         # As guias de mes vem de "saldos" tambem, mas do ANO SELECIONADO:
@@ -2720,8 +2756,8 @@ try {
         # Reimportar o MESMO arquivo NAO REPETE as linhas: cada registro e'
         # comparado, um a um, com as linhas de "extratos" ja' gravadas DENTRO
         # do periodo do arquivo, e o resultado tem de ser o aviso de "dados
-        # ja' existem" - nada entra e o saldo do fim de periodo nao e'
-        # recalculado (a prova das duas coisas esta' no arquivo, no fim do
+        # ja' existem" - nada entra e os saldos de fim de mes nao sao
+        # recalculados (a prova das duas coisas esta' no arquivo, no fim do
         # passo). A lista de anos segue com os mesmos 2. A reimportacao e' de
         # PROPOSITO de outra tela (tbSaldos): importar tem de CAIR na tela de
         # extratos, onde as linhas novas aparecem - sem navegar, quem importou
@@ -2774,13 +2810,13 @@ try {
         Check 'importar caiu na tela de extratos (partindo da tbSaldos)' (
             $gradeVolta)
         $cbAnoC = Find-ComboHwnd $mainImp 100
-        Check 'cbYear inalterado apos a reimportacao' (
-            (Get-ComboCount $cbAnoC) -eq 2) ('itens=' + (Get-ComboCount $cbAnoC))
+        Check 'cbYear inalterado apos a reimportacao (3 anos)' (
+            (Get-ComboCount $cbAnoC) -eq 3) ('itens=' + (Get-ComboCount $cbAnoC))
 
         # Extrato em ANSI: o parser tem de converte-los para UTF-8. O arquivo
         # tem um registro so', de MAR/2024, e o balanco gravado fecha esse
-        # mes - 2024 e' um ano que AINDA NAO estava em "saldos", entao a
-        # lista de anos ganha um item e passa a 3.
+        # mes - 2024 ja' estava na lista desde a importacao UTF-8, entao a
+        # lista de anos nao muda.
         $dlgImp3 = Invoke-Importar $pImp $ofxAnsi
         Check 'dialogo de resultado da importacao ANSI' ($dlgImp3 -ne [IntPtr]::Zero)
         if ($dlgImp3 -ne [IntPtr]::Zero) {
@@ -2789,7 +2825,7 @@ try {
                 Wait-DialogClosed $dlgImp3)
         }
         $cbAnoD = Find-ComboHwnd $mainImp 100
-        Check 'cbYear ganhou o ano do fim do arquivo ANSI (3 anos)' (
+        Check 'cbYear inalterado apos o ANSI (o 2024 ja estava la)' (
             (Get-ComboCount $cbAnoD) -eq 3) ('itens=' + (Get-ComboCount $cbAnoD))
 
         # Arquivo de outra conta: o aviso tem de vir no lugar do resultado.
@@ -2874,38 +2910,53 @@ try {
             [string]$memoAnsi)
         Check 'memo acentuado do arquivo ANSI (1252) convertido p/ UTF-8' (
             $temAnsi)
-        # ---- o balanco do fim do periodo, que a importacao grava junto
-        # com as linhas na MESMA transacao. O Sq le a primeira coluna como
-        # INT, entao o balance (REAL) e' conferido contando a linha em que
+        # ---- os balancos de fim de MES, que a importacao grava junto com
+        # as linhas na MESMA transacao. O Sq le a primeira coluna como INT,
+        # entao o balance (REAL) e' conferido contando a linha em que
         # |balance - esperado| < 0.01 - o ponto decimal e' o do SQL (o
         # locale da suite nao entra na conta).
-        # Periodo do arquivo UTF-8: 202401 ate' 202504. A abertura e' zero
-        # (nenhum saldo anterior a 2024-01) e a soma e' a de TODAS as linhas
-        # de "extratos" no periodo: -4860 (as 80 de 2025-01 do passo [8]) +
-        # 1311.65 (as 4 linhas do arquivo, que entraram uma vez so'). A
-        # reimportacao nao mexeu aqui de proposito: sem registro novo o
+        # O arquivo UTF-8 cobre de 202401 ate' 202504 e tem transacao em
+        # QUATRO meses (2024-01, 2024-02, 2025-03 e 2025-04 - o bloco sem
+        # TRNAMT e' de 2025-05 e nao virou linha), entao sao quatro saldos.
+        # Cada um le a abertura (zero: nenhum saldo anterior a 2024-01) mais
+        # a soma de TODAS as linhas de "extratos" do comeco do periodo ate'
+        # o fim DAQUELE mes: as 80 de 2025-01 do passo [8] entram de
+        # 2025-03 em diante, que e' o acumulado que a coluna Saldo mostra.
+        # A reimportacao nao mexeu aqui de proposito: sem registro novo o
         # saldo nao e' recalculado.
-        $qtdFim2504 = [Sq]::Consultar($minewDb,
-            "SELECT COUNT(*) FROM saldos WHERE enddate = '2025-04-30';")
-        Check 'fim de periodo do arquivo gravado em UMA linha' (
-            $qtdFim2504 -eq 1) ('linhas=' + $qtdFim2504)
-        $balFim2504 = [Sq]::Consultar($minewDb,
-            "SELECT COUNT(*) FROM saldos WHERE enddate = '2025-04-30'" +
-            ' AND ABS(balance + 3548.35) < 0.01;')
-        Check 'balanco do fim de periodo (reimportacao nao somou)' (
-            $balFim2504 -eq 1) ('linhas=' + $balFim2504)
-        # O arquivo ANSI traz um registro so', de MAR/2024: o periodo e' de
-        # um mes, entao abre em 2024-03-01 e fecha em 2024-03-31 com a soma
-        # de TODO o mes - so' a linha do proprio arquivo, -12.34 (nenhum
-        # saldo anterior a 2024-03: a abertura tambem e' zero).
-        $qtdFim2403 = [Sq]::Consultar($minewDb,
-            "SELECT COUNT(*) FROM saldos WHERE enddate = '2024-03-31';")
-        Check 'fim de periodo do ANSI gravado em UMA linha' (
-            $qtdFim2403 -eq 1) ('linhas=' + $qtdFim2403)
+        # As virgulas na frente de cada sub-array sao de proposito: sem elas
+        # o @( ) do PowerShell achataria os quatro pares em um array so' de
+        # strings e o foreach iteraria CARACTERE por CARACTERE.
+        $saldosUtf8 = @(
+            , @('2024-01-31', '-123.45')
+            , @('2024-02-29', '1376.55')
+            , @('2025-03-31', '-3493.35')
+            , @('2025-04-30', '-3548.35')
+        )
+        foreach ($parSaldo in $saldosUtf8) {
+            $balFimMes = [Sq]::Consultar($minewDb,
+                "SELECT COUNT(*) FROM saldos WHERE enddate = '" +
+                $parSaldo[0] + "' AND ABS(balance - (" + $parSaldo[1] +
+                ')) < 0.01;')
+            Check ('um saldo por mes (' + $parSaldo[0] + ' = ' +
+                $parSaldo[1] + ')') ($balFimMes -eq 1) (
+                'linhas=' + $balFimMes)
+        }
+        # O mes SEM transacao nao vira linha de saldo - so' os do arquivo
+        # fecham. Se 2025-05 aparecesse aqui, o saldo estaria gravando mes
+        # em que nao ha' nada que fechar.
+        $qtdFim2505 = [Sq]::Consultar($minewDb,
+            "SELECT COUNT(*) FROM saldos WHERE enddate = '2025-05-31';")
+        Check 'mes sem transacao nao virou saldo (sem 2025-05-31)' (
+            $qtdFim2505 -eq 0) ('linhas=' + $qtdFim2505)
+        # O arquivo ANSI traz um registro so', de MAR/2024, entao fecha UM
+        # mes: 2024-03-31. O saldo nao e' mais -12.34 porque a abertura agora
+        # e' o saldo gravado do mes anterior (1376.55, o fim de fevereiro) e
+        # a soma e' so' a de marco: 1376.55 - 12.34 = 1364.21.
         $balFim2403 = [Sq]::Consultar($minewDb,
             "SELECT COUNT(*) FROM saldos WHERE enddate = '2024-03-31'" +
-            ' AND ABS(balance + 12.34) < 0.01;')
-        Check 'balanco do fim de periodo do ANSI (-12.34)' (
+            ' AND ABS(balance - 1364.21) < 0.01;')
+        Check 'saldo do ANSI (2024-03-31 = abertura de fev + -12.34)' (
             $balFim2403 -eq 1) ('linhas=' + $balFim2403)
         # O arquivo RECUSADO traz um registro de 2024-06-15: se a recusa
         # viesse depois de gravar, apareceria aqui um fim de 2024-06-30.
@@ -2913,16 +2964,16 @@ try {
             "SELECT COUNT(*) FROM saldos WHERE enddate = '2024-06-30';")
         Check 'arquivo recusado nao gravou saldo (sem 2024-06-30)' (
             $qtdFim2406 -eq 0) ('linhas=' + $qtdFim2406)
-        # 175 do passo [8] + os DOIS balancos da importacao. A linha da
-        # "outra conta" do passo [10] ainda nao existe, entao esta' e' a
-        # contagem toda de "saldos".
+        # 175 do passo [8] + os QUATRO saldos do arquivo UTF-8 + o do ANSI.
+        # A linha da "outra conta" do passo [10] ainda nao existe, entao esta'
+        # e' a contagem toda de "saldos".
         $qtdSal9 = [Sq]::Consultar($minewDb, 'SELECT COUNT(*) FROM saldos;')
-        Check 'saldos = 175 do passo [8] + 2 balancos importados' (
-            $qtdSal9 -eq 177) ('qtd=' + $qtdSal9)
+        Check 'saldos = 175 do passo [8] + 5 saldos importados' (
+            $qtdSal9 -eq 180) ('qtd=' + $qtdSal9)
     }
 
     # ---------------------------- [10] cbAccount acompanha a tbContas no Voltar
-    Write-Banner '[10/11] "Voltar" da tbContas remonta cbAccount'
+    Write-Banner '[10/12] "Voltar" da tbContas remonta cbAccount'
     $pCb = $null
     # Mesma protecao dos demais passos: excecao tem de virar FALHA.
     $ErrorActionPreference = 'Stop'
@@ -2943,11 +2994,11 @@ try {
                 "INSERT INTO banks (id, name, alias)" +
                 " VALUES ('001', 'Banco do Brasil', 'BB');") -eq 1)
         # Um saldo de OUTRA conta, gravado com o arquivo livre: a tbSaldos
-        # so' pode mostrar as 177 linhas da conta selecionada no combo (a
-        # 178a, de outra conta, tem de ficar de fora) - e' a prova do
-        # filtro da grade de saldos. As 177 sao as 175 do passo [8] mais os
-        # DOIS balancos que a importacao gravou (fim de 2025-04 e de
-        # 2024-03, ambos na mesma conta).
+        # so' pode mostrar as 180 linhas da conta selecionada no combo (a
+        # 181a, de outra conta, tem de ficar de fora) - e' a prova do
+        # filtro da grade de saldos. As 180 sao as 175 do passo [8] mais os
+        # CINCO que a importacao gravou (os quatro meses do arquivo UTF-8,
+        # de 2024-01 a 2025-04, e o de 2024-03 do ANSI).
         Check 'saldo de outra conta gravado (passo [10])' (
             [Sq]::Executar($minewDb,
                 'INSERT INTO saldos (account_id, balance, enddate)' +
@@ -3000,7 +3051,7 @@ try {
             # nPage = visiveis, e o GetRecordCount do TSQLQuery vem com uma
             # linha a menos - logo linhas reais = nMax - nPage + 2
             # (VScrollRows, calibrado com contagens conhecidas). Tem de dar
-            # 177 (saldos da conta do combo), nunca as 178 do arquivo.
+            # 180 (saldos da conta do combo), nunca as 181 do arquivo.
             $gradeSal = [IntPtr]::Zero
             for ($t = 0; ($t -lt 20) -and ($gradeSal -eq [IntPtr]::Zero); $t++) {
                 Start-Sleep -Milliseconds 250
@@ -3014,8 +3065,8 @@ try {
                 }
             }
             $linhasSal = [UiTest]::VScrollRows($gradeSal)
-            Check 'tbSaldos mostra so as linhas da conta do combo (177 de 178)' (
-                $linhasSal -eq 177) ('linhas=' + $linhasSal +
+            Check 'tbSaldos mostra so as linhas da conta do combo (180 de 181)' (
+                $linhasSal -eq 180) ('linhas=' + $linhasSal +
                 ' grade=' + $gradeSal)
 
             # ---- enddate em EXECUCAO: o editor da coluna da data abre com o
@@ -3387,7 +3438,7 @@ try {
     # A digitacao na grade do passo [10] so' da para conferir no arquivo com a
     # conexao encerrada (mesmo motivo do delete de contas): a mascara deixou
     # 31/03/2028 na tela do registro novo e o campo tem de ter gravado
-    # 2028-03-31 (177 da conta + 1 da outra conta + 1 digitado).
+    # 2028-03-31 (180 da conta + 1 da outra conta + 1 digitado).
     $qtdIsoSal = [Sq]::Consultar($minewDb,
         "SELECT COUNT(*) FROM saldos WHERE enddate = '2028-03-31';")
     Check 'enddate digitado na grade gravado em AAAA-MM-DD (passo [10])' (
@@ -3395,7 +3446,7 @@ try {
         'editou=' + $editouData + ' qtd=' + $qtdIsoSal)
     $qtdSalTot = [Sq]::Consultar($minewDb, 'SELECT COUNT(*) FROM saldos;')
     Check 'linha digitada na grade entrou em saldos (passo [10])' (
-        $qtdSalTot -eq 179) ('qtd=' + $qtdSalTot)
+        $qtdSalTot -eq 182) ('qtd=' + $qtdSalTot)
     # O saldo digitado na coluna balance tem de ter ido junto com a data:
     # balance e' NOT NULL, entao sem ele o Post do VK_UP nao grava nada (e'
     # por isso que o registro novo do teste leva saldo + data). O valor
@@ -3442,8 +3493,332 @@ try {
             $restamCb -eq 0) ('qtd=' + $restamCb)
     }
 
-    # ------------------------------------------------ [11] estado final + WER
-    Write-Banner '[11/11] Estado final e log de crashes do Windows'
+    # ---------------------------- [11] importar transacoes (miImpTrans)
+    Write-Banner '[11/12] Importar Transacoes (CSV) -> substitui extratos e saldos'
+    $pCsv = $null
+    # Mesma protecao dos demais passos: excecao tem de virar FALHA.
+    $ErrorActionPreference = 'Stop'
+    try {
+        # As provas de CODIGO do caminho moram em unitOfx (o leitor de CSV) e
+        # em unitDatabase (a substituicao), que nao sao os arquivos lidos no
+        # passo [1] - entao elas sao lidas aqui, junto com o que as exercita.
+        $ofxTexto = ''
+        $ofxPath = Join-Path $root 'unitOfx.pas'
+        if (Test-Path $ofxPath) { $ofxTexto = [IO.File]::ReadAllText($ofxPath) }
+        $dbTexto = ''
+        $dbPath = Join-Path $root 'unitDatabase.pas'
+        if (Test-Path $dbPath) { $dbTexto = [IO.File]::ReadAllText($dbPath) }
+        Check 'unitOfx.pas e unitDatabase.pas lidos (passo [11])' (
+            ($ofxTexto -ne '') -and ($dbTexto -ne ''))
+
+        # LerCsv acha as colunas PELO NOME do cabecalho (a ordem delas nao
+        # importa) e DTPOSTED/TRNAMT sao as obrigatorias - data e valor, que
+        # sao as duas colunas NOT NULL da tabela.
+        Check 'LerCsv le as colunas pelo nome do cabecalho (.pas)' (
+            ($ofxTexto -match "nome = 'DTPOSTED'") -and
+            ($ofxTexto -match "nome = 'TRNAMT'")) (
+            'unitOfx.pas sem a leitura de colunas pelo nome')
+
+        # A substituicao e' limpeza + gravacao na MESMA transacao: o commit
+        # cobre as duas coisas e o rollback leva a limpeza junto. O corpo e' o
+        # ULTIMO "function ImportarCsv(" do arquivo: a interface declara a
+        # funcao antes do "implementation", e casar o cabecalho com "var" logo
+        # depois iria pegar a DECLARACAO e varrer ate' o fim de outra rotina.
+        $blocoCsv = ''
+        $posImpCsv = $dbTexto.LastIndexOf('function ImportarCsv(')
+        if ($posImpCsv -ge 0) { $blocoCsv = $dbTexto.Substring($posImpCsv) }
+        Check 'ImportarCsv limpa as duas tabelas e reusa a gravacao (.pas)' (
+            ($blocoCsv -match 'DELETE FROM saldos') -and
+            ($blocoCsv -match 'DELETE FROM extratos') -and
+            ($blocoCsv -match 'ImportarExtratos')) (
+            'ImportarCsv sem a limpeza das duas tabelas')
+
+        # O handler tem de LER o csv e GRAVAR pela substituicao - e, como os
+        # demais importar, cair na tela de extratos no fim.
+        $blocoImpCsv = ''
+        if ($pasTexto -match
+            '(?s)procedure TFormMoney\.miImpTransClick.*?\nend;') {
+            $blocoImpCsv = $Matches[0]
+        }
+        Check 'miImpTransClick le o CSV e grava pela substituicao (.pas)' (
+            ($blocoImpCsv -match 'LerCsv') -and
+            ($blocoImpCsv -match 'ImportarCsv') -and
+            ($blocoImpCsv -match 'IrParaTelaExtratos')) (
+            'miImpTransClick sem LerCsv/ImportarCsv')
+
+        # Item de menu ligado ao handler e dialogo de arquivo com filtro de
+        # CSV: sem os dois o item nao faz nada.
+        $blocoMenu = Get-LfmBlock $lfmTexto 'miImpTrans: TMenuItem'
+        $blocoDlg = Get-LfmBlock $lfmTexto 'dlgImpCsv: TOpenDialog'
+        Check 'miImpTrans ligado ao miImpTransClick (.lfm)' (
+            $blocoMenu.Contains('OnClick = miImpTransClick')) (
+            'miImpTrans sem OnClick no .lfm')
+        Check 'dlgImpCsv declarado com filtro de CSV (.lfm)' (
+            ($blocoDlg -ne '') -and
+            $blocoDlg.Contains("Filter = 'Arquivos CSV")) (
+            'dlgImpCsv ausente ou sem filtro de CSV no .lfm')
+
+        $csvTrans = Join-Path $root 'backup\extrato.csv'
+        Check 'fixture CSV de transacoes existe (passo [11])' (Test-Path $csvTrans)
+
+        # O passo [10] deixou "contas" vazia (a conta foi excluida pela tela de
+        # gestao) e as duas tabelas com o dado do passo [9] - linhas de OFX em
+        # "extratos" e saldos gravados. E' esse conteudo que a importacao de
+        # CSV tem de APAGAR, entao ele e' medido ANTES para a limpeza ter
+        # numero. A conta destino nasce aqui, com o arquivo LIVRE (app morta).
+        $sqlContaCsv = 'INSERT INTO contas (acctid, accttype, bankid, branchid,' +
+            ' description) VALUES (''9999'', ''CHECKING'', 1, ''0001'',' +
+            ' ''Conta do CSV'');'
+        Check 'conta de destino do CSV gravada (passo [11])' (
+            [Sq]::Executar($minewDb, $sqlContaCsv) -eq 1)
+        $antesExt = [Sq]::Consultar($minewDb, 'SELECT COUNT(*) FROM extratos;')
+        $antesSal = [Sq]::Consultar($minewDb, 'SELECT COUNT(*) FROM saldos;')
+        Check 'as duas tabelas populadas antes do CSV (passo [11])' (
+            ($antesExt -gt 0) -and ($antesSal -gt 0)) (
+            'extratos=' + $antesExt + ' saldos=' + $antesSal)
+
+        $pCsv = Start-Process -FilePath $exe -WorkingDirectory $root -PassThru
+        Start-Sleep -Seconds 3
+        $pCsv.Refresh()
+        $mainCsv = $pCsv.MainWindowHandle
+        Check 'aplicacao abriu para o passo [11]' ($mainCsv -ne [IntPtr]::Zero)
+
+        # Abre o database: e' o miOpen que carrega as combos de filtro.
+        $dlgOpenCsv = Invoke-MenuFileDialog $pCsv 'Abrir Database'
+        Check 'dialogo "Abrir" abriu (passo [11])' ($dlgOpenCsv -ne [IntPtr]::Zero)
+        if ($dlgOpenCsv -ne [IntPtr]::Zero) {
+            $editOpenCsv = Set-FileDialogName $dlgOpenCsv $minewDb
+            Check 'campo de nome do arquivo encontrado (passo [11])' (
+                $editOpenCsv -ne [IntPtr]::Zero)
+            Check 'dialogo "Abrir" fechou ao confirmar (passo [11])' (
+                Wait-DialogClosed $dlgOpenCsv)
+            # A conexao abre depois que o dialogo some: um aviso aqui ficaria
+            # pendente e enganaria o Invoke-ImportarCsv (mesmo #32770).
+            $avisoCsv = [IntPtr]::Zero
+            for ($t = 0; ($t -lt 12) -and ($avisoCsv -eq [IntPtr]::Zero); $t++) {
+                Start-Sleep -Milliseconds 250
+                $avisoCsv = [UiTest]::FindDialog([uint32]$pCsv.Id)
+            }
+            Check 'nenhum aviso ao abrir o database (passo [11])' (
+                $avisoCsv -eq [IntPtr]::Zero) ('hwnd=' + $avisoCsv)
+        }
+        $visCsv = @(Wait-Interface $mainCsv $true)
+        Check 'interface revelada para importar o CSV' ($visCsv.Count -gt 0) (
+            'janelas=' + $visCsv.Count)
+
+        # Sem conta escolhida nao ha' para onde gravar e o miImpTrans recusa
+        # antes de abrir o dialogo - entao a conta criada acima tem de estar
+        # no filtro.
+        $cbContaCsv = Find-ComboHwnd $mainCsv 212
+        Check 'cbAccount lista a conta de destino do CSV' (
+            (Get-ComboCount $cbContaCsv) -eq 1) (
+            'combo=' + $cbContaCsv + ' itens=' + (Get-ComboCount $cbContaCsv))
+
+        # O Caption do item vem do .lfm (Get-LfmCaption) e nao de uma
+        # constante no .ps1: MenuId compara o texto UTF-16 que a aplicacao
+        # tirou do arquivo, e este script nao tem BOM para espelhar os bytes
+        # UTF-8 do rotulo - e' por isso que os demais menus da suite sao ASCII.
+        $capCsv = Get-LfmCaption $lfmTexto 'miImpTrans: TMenuItem'
+        Check 'Caption de miImpTrans lido do .lfm (passo [11])' ($capCsv -ne '')
+        $dlgCsv = Invoke-ImportarCsv $pCsv $csvTrans $capCsv
+        $janelaDif = [IntPtr]::Zero
+        if ($dlgCsv -eq [IntPtr]::Zero) {
+            # Sem o dialogo de resultado, alguma OUTRA janela (um aviso do
+            # proprio handler, o dialogo de arquivo ainda aberto) e' o que
+            # explica: ela vira detalhe da falha e ainda e' dispensada, para
+            # nao ficar pendurada atrapalhando as conferencias seguintes.
+            for ($tD = 0; ($tD -lt 8) -and ($janelaDif -eq [IntPtr]::Zero); $tD++) {
+                Start-Sleep -Milliseconds 250
+                $janelaDif = [UiTest]::FindDialog([uint32]$pCsv.Id)
+            }
+            if ($janelaDif -ne [IntPtr]::Zero) {
+                [void][UiTest]::PostMessage($janelaDif, 0x0010, [IntPtr]::Zero,
+                    [IntPtr]::Zero)
+                [void](Wait-DialogClosed $janelaDif)
+            }
+        }
+        Check 'dialogo de resultado da importacao do CSV' (
+            $dlgCsv -ne [IntPtr]::Zero) ('outra janela do app hwnd=' + $janelaDif)
+        if ($dlgCsv -ne [IntPtr]::Zero) {
+            [void][UiTest]::PostMessage($dlgCsv, 0x0010, [IntPtr]::Zero,
+                [IntPtr]::Zero)                                            # WM_CLOSE
+            Check 'resultado da importacao do CSV dispensado' (
+                Wait-DialogClosed $dlgCsv)
+        }
+        $pCsv.Refresh()
+        Check 'aplicacao viva apos importar o CSV' (-not $pCsv.HasExited)
+
+        # O recarregar das combos e' observavel: "saldos" agora so' tem o
+        # periodo do arquivo (de 2025-04 ate' 2026-09, uma linha por mes), e
+        # o cbYear, que monta a lista de saldos.enddate, enxerga os DOIS
+        # anos do periodo. E o importar cai na tela de extratos, como no
+        # miImport.
+        $gradeCsv = $false
+        for ($tG = 0; ($tG -lt 20) -and (-not $gradeCsv); $tG++) {
+            Start-Sleep -Milliseconds 250
+            $gradeCsv = (Find-GridTransHwnd $mainCsv) -ne [IntPtr]::Zero
+        }
+        Check 'importar o CSV caiu na tela de extratos' ($gradeCsv)
+        $cbContaD = Find-ComboHwnd $mainCsv 212
+        Check 'cbAccount seguiu apos o CSV (1 conta)' (
+            (Get-ComboCount $cbContaD) -eq 1) (
+            'itens=' + (Get-ComboCount $cbContaD))
+        $cbAnoCsv = Find-ComboHwnd $mainCsv 100
+        Check 'cbYear lista os 2 anos do periodo do CSV (2026 e 2025)' (
+            (Get-ComboCount $cbAnoCsv) -eq 2) (
+            'itens=' + (Get-ComboCount $cbAnoCsv))
+    }
+    catch {
+        Check 'fluxo do miImpTrans sem excecao' $false $_.Exception.Message
+    }
+    finally {
+        $ErrorActionPreference = 'Continue'
+        if ($pCsv -and -not $pCsv.HasExited) {
+            try { $pCsv.Kill(); $pCsv.WaitForExit() } catch { }
+        }
+    }
+
+    # Conferencia no arquivo: so' funciona com a conexao encerrada (app morta)
+    # e e' o que prova que a transacao inteira - limpeza, linhas e saldos - foi
+    # commitada de uma vez. O CSV tem 188 linhas, de 2025-04-01 a 2026-09-21,
+    # soma 396.25 e TEM transacao nos 18 meses do intervalo (nenhum mes vazio),
+    # entao "saldos" fecha esses 18 meses.
+    $idConta = [Sq]::Consultar($minewDb, 'SELECT id FROM contas;')
+    Check 'conta de destino unica apos o CSV (passo [11])' ($idConta -gt 0) (
+        'id=' + $idConta)
+    $nExt = [Sq]::Consultar($minewDb, 'SELECT COUNT(*) FROM extratos;')
+    Check 'extratos substituidos pelo CSV (188 linhas)' ($nExt -eq 188) (
+        'antes=' + $antesExt + ' agora=' + $nExt)
+    $nExtConta = [Sq]::Consultar($minewDb,
+        'SELECT COUNT(*) FROM extratos WHERE account_id = ' + $idConta + ';')
+    Check 'todas as linhas do CSV na conta escolhida' ($nExtConta -eq 188) (
+        'qtd=' + $nExtConta)
+    $nSal = [Sq]::Consultar($minewDb, 'SELECT COUNT(*) FROM saldos;')
+    Check 'saldos substituidos pelo CSV (um por mes, 18 linhas)' (
+        $nSal -eq 18) ('antes=' + $antesSal + ' agora=' + $nSal)
+    $nSalConta = [Sq]::Consultar($minewDb,
+        'SELECT COUNT(*) FROM saldos WHERE account_id = ' + $idConta + ';')
+    Check 'saldo de fim de mes na conta escolhida (18 linhas)' (
+        $nSalConta -eq 18) ('qtd=' + $nSalConta)
+    $salSemLixo = [Sq]::Consultar($minewDb,
+        "SELECT COUNT(*) FROM saldos WHERE enddate NOT GLOB" +
+        " '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]';")
+    Check 'enddate dos 18 saldos em AAAA-MM-DD' ($salSemLixo -eq 0) (
+        'qtd=' + $salSemLixo)
+
+    # A soma das linhas e o balanco do ULTIMO mes sao a MESMA conta do
+    # miImport: abertura zerada (a "saldos" ficou vazia) + soma acumulada do
+    # comeco do arquivo ate' o fim de cada mes. O fecho de 2026-09-30 e' o
+    # arquivo inteiro, que e' a soma das 188 linhas.
+    $somaOk = [Sq]::Consultar($minewDb,
+        'SELECT COUNT(*) FROM (SELECT CAST(SUM(trnamt) AS REAL) AS total' +
+        ' FROM extratos) WHERE total IS NOT NULL AND' +
+        ' ABS(total - 396.25) < 0.001;')
+    Check 'soma das linhas do CSV = 396.25' ($somaOk -eq 1) ('qtd=' + $somaOk)
+    $balancoOk = [Sq]::Consultar($minewDb,
+        "SELECT COUNT(*) FROM saldos WHERE enddate = '2026-09-30'" +
+        ' AND ABS(balance - 396.25) < 0.001;')
+    Check 'balanco acumulado do ultimo mes (2026-09-30 = 396.25)' (
+        $balancoOk -eq 1) ('qtd=' + $balancoOk)
+
+    # O ACUMULADO DE CADA MES sai do PROPRIO CSV: soma as linhas por mes
+    # (ordem dos meses, nao a do arquivo) e compara com o balance gravado no
+    # fim de cada um - e' a prova de que cada fecho e' o arquivo ate' la' e
+    # nao o mes isolado. Os literais vao em texto e o parse e' com o
+    # InvariantCulture porque o locale da suite e' o portugues (virgula).
+    $somasMes = @{}
+    foreach ($linhaCsv in [IO.File]::ReadAllLines($csvTrans)) {
+        if ($linhaCsv.Trim() -eq '') { continue }
+        $camposCsv = $linhaCsv.Split(';')
+        if ($camposCsv.Count -lt 4) { continue }
+        if ($camposCsv[2] -notmatch '^[0-9]{4}-[0-9]{2}-[0-9]{2}$') {
+            continue
+        }
+        $mesCsv = $camposCsv[2].Substring(0, 7)
+        $valorCsv = [double]::Parse($camposCsv[3],
+            [Globalization.CultureInfo]::InvariantCulture)
+        if ($somasMes.ContainsKey($mesCsv)) {
+            $somasMes[$mesCsv] = $somasMes[$mesCsv] + $valorCsv
+        }
+        else {
+            $somasMes[$mesCsv] = $valorCsv
+        }
+    }
+    Check 'CSV do fixture tem 18 meses para conferir' ($somasMes.Count -eq 18) (
+        'meses=' + $somasMes.Count)
+    $acumulado = 0.0
+    $mesesErrados = 0
+    foreach ($mesCsv in ($somasMes.Keys | Sort-Object)) {
+        $acumulado = $acumulado + $somasMes[$mesCsv]
+        $inicioMes = [DateTime]::ParseExact($mesCsv + '-01', 'yyyy-MM-dd',
+            [Globalization.CultureInfo]::InvariantCulture)
+        $fimMes = $inicioMes.AddMonths(1).AddDays(-1)
+        $chaveMes = $fimMes.ToString('yyyy-MM-dd',
+            [Globalization.CultureInfo]::InvariantCulture)
+        $esperadoMes = $acumulado.ToString('0.0000',
+            [Globalization.CultureInfo]::InvariantCulture)
+        $bateuMes = [Sq]::Consultar($minewDb,
+            "SELECT COUNT(*) FROM saldos WHERE enddate = '" + $chaveMes +
+            "' AND ABS(balance - (" + $esperadoMes + ')) < 0.001;')
+        if ($bateuMes -ne 1) { $mesesErrados++ }
+    }
+    Check 'saldo acumulado do CSV em CADA mes (18/18)' ($mesesErrados -eq 0) (
+        'meses divergentes=' + $mesesErrados)
+
+    # As bordas do periodo: a primeira e a ultima data do arquivo, sem linha
+    # nenhuma fora do que o CSV declara.
+    $foraFaixa = [Sq]::Consultar($minewDb,
+        "SELECT COUNT(*) FROM extratos WHERE dtposted < '2025-04-01'" +
+        " OR dtposted > '2026-09-21';")
+    Check 'nenhuma linha fora do periodo do CSV' ($foraFaixa -eq 0) (
+        'qtd=' + $foraFaixa)
+    $primeiraData = [Sq]::Consultar($minewDb,
+        "SELECT COUNT(*) FROM extratos WHERE dtposted = '2025-04-01';")
+    Check 'primeira data do CSV gravada em AAAA-MM-DD' ($primeiraData -ge 1) (
+        'qtd=' + $primeiraData)
+    $ultimaData = [Sq]::Consultar($minewDb,
+        "SELECT COUNT(*) FROM extratos WHERE dtposted = '2026-09-21';")
+    Check 'ultima data do CSV gravada em AAAA-MM-DD' ($ultimaData -ge 1) (
+        'qtd=' + $ultimaData)
+
+    # Cada coluna do cabecalho no lugar certo: trntype e chknum vem do CSV
+    # (o ID nao, que e' a chave do exportador) e o memo prova que o corte das
+    # linhas nao rasgou as aspas do meio do texto.
+    $nTipo = [Sq]::Consultar($minewDb,
+        "SELECT COUNT(*) FROM extratos WHERE trntype IN ('CREDIT','PAYMENT');")
+    Check 'trntype do CSV em todas as linhas' ($nTipo -eq 188) ('qtd=' + $nTipo)
+    $nDoc = [Sq]::Consultar($minewDb,
+        "SELECT COUNT(*) FROM extratos WHERE chknum = '077';")
+    Check 'chknum do CSV em todas as linhas' ($nDoc -eq 188) ('qtd=' + $nDoc)
+    $memoCsv = 'Pix recebido: "Cp :31872495-JAYKON WILLIAN DE OLIVEIRA' +
+        ' CONSULTORIA E"'
+    # A quantidade esperada vem do PROPRIO CSV: o arquivo repete esse memo em
+    # varias linhas (as aspas sao parte do texto, nao envoltorio do campo - as
+    # linhas do CSV vem sem aspas em volta do MEMO). O aspas no FECHO do memo
+    # tambem e' o que distingue as 3 linhas das outras que tem a mesma abertura
+    # e continuam "CONSULTORIA EM TECNOLOGIA...".
+    $qtdMemoCsv = ([regex]::Matches([IO.File]::ReadAllText($csvTrans),
+        [regex]::Escape($memoCsv))).Count
+    $nMemo = [Sq]::Consultar($minewDb,
+        "SELECT COUNT(*) FROM extratos WHERE memo = '" + $memoCsv + "';")
+    Check 'memo com aspas do CSV gravado inteiro' (
+        ($nMemo -eq $qtdMemoCsv) -and ($nMemo -gt 0)) (
+        'csv=' + $qtdMemoCsv + ' banco=' + $nMemo)
+
+    # O conteudo anterior tem de ter ido TODO embora - a limpeza provada pelo
+    # conteudo, nao so' pela contagem (o total ja' bate, mas uma linha do OFX
+    # que sobrasse seria contagem igual e dado errado).
+    $sobrouOfx = [Sq]::Consultar($minewDb,
+        "SELECT COUNT(*) FROM extratos WHERE memo = 'Salario de fevereiro';")
+    Check 'nenhuma linha do OFX anterior sobrou' ($sobrouOfx -eq 0) (
+        'qtd=' + $sobrouOfx)
+    $lixoData = [Sq]::Consultar($minewDb,
+        'SELECT COUNT(*) FROM extratos WHERE dtposted NOT GLOB' +
+        " '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]';")
+    Check 'nenhuma data do CSV virou lixo' ($lixoData -eq 0) ('qtd=' + $lixoData)
+
+    # ------------------------------------------------ [12] estado final + WER
+    Write-Banner '[12/12] Estado final e log de crashes do Windows'
     if (-not (Test-Path $db)) {
         $null = Invoke-App $RunSeconds   # recria o banco para deixar o ambiente utilizavel
     }

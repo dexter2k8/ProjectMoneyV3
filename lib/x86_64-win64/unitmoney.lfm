@@ -541,6 +541,7 @@ object FormMoney: TFormMoney
       end
       object miImpTrans: TMenuItem
         Caption = 'Importar Transações (CSV)'
+        OnClick = miImpTransClick
       end
       object miImpSal: TMenuItem
         Caption = 'Importar Saldos (CSV)'
@@ -605,6 +606,14 @@ object FormMoney: TFormMoney
     Filter = 'Extratos bancários (*.ofc;*.ofx)|*.ofc;*.ofx|Todos os arquivos (*.*)|*.*'
     Options = [ofHideReadOnly, ofPathMustExist, ofFileMustExist, ofEnableSizing]
     Left = 168
+    Top = 160
+  end
+  object dlgImpCsv: TOpenDialog
+    Title = 'Importar Transações (CSV)'
+    DefaultExt = '.csv'
+    Filter = 'Arquivos CSV (*.csv)|*.csv|Todos os arquivos (*.*)|*.*'
+    Options = [ofHideReadOnly, ofPathMustExist, ofFileMustExist, ofEnableSizing]
+    Left = 216
     Top = 160
   end
   object dlgNewDatabase: TSaveDialog

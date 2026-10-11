@@ -81,6 +81,9 @@ type
     // Extrato (miImport): arquivo OFC/OFX escolhido pelo usuario - o
     // conteudo vai para a tabela "extratos", na conta selecionada na tela.
     dlgImportar: TOpenDialog;
+    // Transacoes (miImpTrans): CSV escolhido pelo usuario - as tabelas
+    // "extratos" e "saldos" sao substituidas pelo conteudo dele.
+    dlgImpCsv: TOpenDialog;
     dlgNewDatabase: TSaveDialog;
     dlgOpenDatabase: TOpenDialog;
     SQLite3ConnContas: TSQLite3Connection;
@@ -146,6 +149,10 @@ type
     procedure miGerConClick(Sender: TObject);
     procedure miGerSalClick(Sender: TObject);
     procedure miImportClick(Sender: TObject);
+    // "Importar Transacoes (CSV)": le um CSV (o modelo e' backup/extrato.csv)
+    // e SUBSTITUI o conteudo de "extratos" e "saldos" pelas linhas dele - a
+    // mesma gravacao e os mesmos saldos de fim de mes do miImport.
+    procedure miImpTransClick(Sender: TObject);
     procedure miListClick(Sender: TObject);
     procedure miNewClick(Sender: TObject);
     procedure miOpenClick(Sender: TObject);
@@ -1713,11 +1720,11 @@ begin
       if not SQLQueryContas.Active then
         SQLQueryContas.Open;
       // Recarrega as combos - a lista de anos vem de saldos e a importacao
-      // GRAVA um saldo (o balanco do fim do periodo), entao o ano do fim do
-      // arquivo pode aparecer aqui. A conta e o ano escolhidos sao
-      // devolvidos depois do recarregar, e reabre as queries das duas grades
-      // ja' filtradas (extratos e saldos) - e' a grade de extratos que mostra
-      // o que acabou de entrar.
+      // GRAVA um saldo por mes (o balanco acumulado ate' o fim de cada mes),
+      // entao o ano do fim do arquivo pode aparecer aqui. A conta e o ano
+      // escolhidos sao devolvidos depois do recarregar, e reabre as queries
+      // das duas grades ja' filtradas (extratos e saldos) - e' a grade de
+      // extratos que mostra o que acabou de entrar.
       CarregarFiltrosExtratos;
       indice := cbAccount.Items.IndexOf(contaTexto);
       if indice >= 0 then
@@ -1769,6 +1776,131 @@ begin
     mensagem := mensagem + LineEnding + IntToStr(ignorados) + ' ' +
       Plural(ignorados, 'bloco ignorado (sem data ou sem valor).',
       'blocos ignorados (sem data ou sem valor).');
+  MessageDlg(mensagem, mtInformation, [mbOK], 0);
+end;
+
+procedure TFormMoney.miImpTransClick(Sender: TObject);
+var
+  caminho, nomeArquivo, contaTexto, anoTexto, mensagem, erro: string;
+  registros: TRegistrosOfx;
+  ignorados, novos, contaId, indice: Integer;
+begin
+  // Mesmo destino do miImport: a conta escolhida no filtro. O CSV nao traz
+  // conta nenhuma (o modelo so' tem ID, TRNTYPE, DTPOSTED, TRNAMT, CHKNUM e
+  // MEMO), entao sem conta escolhida nao ha' para onde gravar - e, como a
+  // importacao SUBSTITUI as tabelas, errar de destino nao teria volta.
+  if (cbAccount.ItemIndex < 0) or (cbAccount.ItemIndex >= cbAccount.Items.Count)
+  then
+  begin
+    MessageDlg('Cadastre uma conta antes de importar as transações.' +
+      LineEnding + 'O CSV vira o extrato inteiro da conta escolhida no ' +
+      'filtro.', mtWarning, [mbOK], 0);
+    Exit;
+  end;
+  contaId := Integer(PtrInt(cbAccount.Items.Objects[cbAccount.ItemIndex]));
+
+  // A recarga das combos no fim comeca sempre no primeiro item: guarda as
+  // duas escolhas para devolver o usuario para onde ele estava.
+  contaTexto := cbAccount.Text;
+  anoTexto := cbYear.Text;
+
+  dlgImpCsv.InitialDir := ExtractFilePath(ParamStr(0));
+  if not dlgImpCsv.Execute then
+    Exit; // usuario cancelou
+
+  caminho := dlgImpCsv.FileName;
+  // Caminho relativo (sem pasta) fica na pasta inicial do dialogo, para o
+  // arquivo nao cair no diretorio de trabalho corrente da aplicacao.
+  if ExtractFilePath(caminho) = '' then
+    caminho := IncludeTrailingPathDelimiter(dlgImpCsv.InitialDir) + caminho;
+  nomeArquivo := ExtractFileName(caminho);
+
+  // Le o arquivo ANTES de mexer no database: aqui a gravacao e' uma
+  // SUBSTITUICAO, entao falha de leitura nao pode ter apagado nada.
+  ignorados := 0;
+  try
+    registros := LerCsv(caminho, ignorados);
+  except
+    on E: Exception do
+    begin
+      MessageDlg('Não foi possível ler o arquivo "' + nomeArquivo + '".' +
+        LineEnding + E.Message, mtError, [mbOK], 0);
+      Exit;
+    end;
+  end;
+
+  // Sem nenhuma linha legivel nao ha' o que substituir - e dizer o formato
+  // esperado e' o que resolve (o leitor ja' diz o que nao achou no cabecalho).
+  if Length(registros) = 0 then
+  begin
+    MessageDlg('Nenhuma transação encontrada em "' + nomeArquivo + '".' +
+      LineEnding + 'Esperava um CSV com separador ";" e uma primeira linha ' +
+      'de cabeçalho com as colunas DTPOSTED e TRNAMT, e em cada linha data ' +
+      'em AAAA-MM-DD e valor com ponto decimal (ex.: -80.90).',
+      mtWarning, [mbOK], 0);
+    Exit;
+  end;
+
+  novos := 0;
+  erro := '';
+  // As queries fecham antes da gravacao (mesmo motivo do miImport): o commit
+  // da substituicao nao pode encontrar sentenca em andamento. O finally
+  // religa tudo e refaz filtros + grade, e vale mesmo quando falha no meio.
+  try
+    try
+      SQLQueryContas.Close;
+      SQLQuerySaldos.Close;
+      SQLQueryExtratos.Close;
+      novos := ImportarCsv(SQLite3ConnContas, contaId, registros);
+    except
+      on E: Exception do
+        erro := 'Não foi possível importar "' + nomeArquivo + '".' +
+          LineEnding + E.Message;
+    end;
+  finally
+    try
+      if not SQLQueryContas.Active then
+        SQLQueryContas.Open;
+      // Recarrega as combos - a lista de anos vem de saldos, que a
+      // substituicao REFAZ (sobra so' o periodo do CSV), entao o ano pode
+      // mudar de valor e ate' de quantidade. A conta e o ano escolhidos sao
+      // devolvidos depois do recarregar, e as duas grades reabrem filtradas.
+      CarregarFiltrosExtratos;
+      indice := cbAccount.Items.IndexOf(contaTexto);
+      if indice >= 0 then
+        cbAccount.ItemIndex := indice;
+      indice := cbYear.Items.IndexOf(anoTexto);
+      if indice >= 0 then
+        cbYear.ItemIndex := indice;
+      AplicarFiltroExtratos;
+      AplicarFiltroSaldos;
+      // Importar tambem cai na tela de extratos (mesmo caminho do
+      // abrir/criar): e' la que as linhas novas aparecem.
+      IrParaTelaExtratos;
+    except
+      on E: Exception do
+        if erro = '' then
+          erro := 'As transações foram gravadas, mas a tela não pôde ser ' +
+            'atualizada.' + LineEnding + E.Message;
+    end;
+  end;
+
+  if erro <> '' then
+  begin
+    MessageDlg(erro, mtError, [mbOK], 0);
+    Exit;
+  end;
+
+  // O usuario tem de saber as DUAS coisas: o que entrou e o que foi
+  // substituido - apagar "extratos" e "saldos" e' parte do que ele pediu.
+  mensagem := 'Importação concluída.' + LineEnding + LineEnding +
+    IntToStr(novos) + ' ' + Plural(novos, 'transação importada em "',
+    'transações importadas em "') + contaTexto + '".' + LineEnding +
+    'Os dados anteriores de "extratos" e "saldos" foram substituídos.';
+  if ignorados > 0 then
+    mensagem := mensagem + LineEnding + IntToStr(ignorados) + ' ' +
+      Plural(ignorados, 'linha ignorada (sem data ou sem valor válido).',
+      'linhas ignoradas (sem data ou sem valor válido).');
   MessageDlg(mensagem, mtInformation, [mbOK], 0);
 end;
 
