@@ -19,8 +19,9 @@
         database aberto -> a interface fica (tbContas e tbSaldos ligadas as
         tabelas); "Fechar Database" volta a esconder
     [9] Importar OFC/OFX (miImport) -> linhas novas entram em "extratos",
-        a reimportacao REPETE as linhas (registro igual e' permitido) e
-        extrato em ANSI vira UTF-8 no arquivo
+        a reimportacao REPETE as linhas (registro igual e' permitido),
+        extrato em ANSI vira UTF-8 no arquivo e o balanco do fim do
+        periodo do arquivo e' gravado em "saldos"
     [10] "Voltar" da tbContas -> cbAccount e' remontado e reflete a conta
         excluida pela propria tela de gestao enquanto o app estava aberto
     [11] Nenhum crash registrado no log de eventos do Windows (WER)
@@ -2649,10 +2650,11 @@ try {
         Check 'aplicacao viva apos a 1a importacao' (-not $pImp.HasExited)
 
         # Depois do resultado as combos ja foram recarregadas. A importacao
-        # grava em "extratos", entao NADA muda na lista de anos (ela vem de
-        # "saldos"): continuam 2 itens, com 2026 na frente (ordem decrescente)
-        # - e a selecao, devolvida pelo texto salvo, tem de seguir 2026
-        # (indice 0).
+        # grava UM saldo em "saldos" (o balanco do fim do periodo do
+        # arquivo), mas o ultimo mes do arquivo e' 2025-04 - ano que JA'
+        # estava na lista (2025 e 2026, do passo [8]), entao continuam 2
+        # itens, com 2026 na frente (ordem decrescente) - e a selecao,
+        # devolvida pelo texto salvo, tem de seguir 2026 (indice 0).
         $cbContaB = Find-ComboHwnd $mainImp 212
         $cbAnoB   = Find-ComboHwnd $mainImp 100
         $nContaB  = Get-ComboCount $cbContaB
@@ -2660,20 +2662,23 @@ try {
         $selAnoB  = [int64][UiTest]::Msg($cbAnoB, 0x0147, [IntPtr]::Zero, [IntPtr]::Zero)
         Check 'cbAccount continua com a conta de destino' ($nContaB -eq 1) (
             'itens=' + $nContaB)
-        Check 'cbYear segue com 2 anos (o arquivo nao muda a lista de saldos)' (
+        Check 'cbYear segue com 2 anos (o fim de 2025 nao muda a lista)' (
             $nAnoB -eq 2) ('itens=' + $nAnoB)
         Check 'cbYear manteve a selecao do usuario (indice 0 = 2026)' (
             $selAnoB -eq 0) ('sel=' + $selAnoB)
-        # As guias de mes tambem vem de "saldos": a importacao nao mexe nelas
-        # - continuam as 4 de janeiro/fevereiro/marco/abril de 2026.
+        # As guias de mes vem de "saldos" tambem, mas do ANO SELECIONADO:
+        # o saldo novo e' de 2025, entao as 4 de janeiro/fevereiro/marco/
+        # abril de 2026 ficam como estavam.
         $guiaImp = Find-TabHwnd $mainImp
         Check 'guias de mes inalteradas apos a importacao (JAN FEV MAR ABR)' (
             [UiTest]::TabCount($guiaImp) -eq 4) (
             'guias=' + [UiTest]::TabCount($guiaImp) + ' hwnd=' + $guiaImp)
 
         # Reimportar o MESMO arquivo REPETE as linhas: registro igual e'
-        # permitido (a conferencia disso e' no arquivo, no fim do passo). Os
-        # anos continuam os mesmos, ja' que a lista vem de "saldos". A
+        # permitido (a conferencia disso e' no arquivo, no fim do passo). A
+        # reimportacao tambem refaz o MESMO fim de periodo (30/04/2025), que
+        # e' ATUALIZADO em vez de ganhar linha nova, entao a lista de anos
+        # segue com os mesmos 2. A
         # reimportacao e' de PROPOSITO de outra tela (tbSaldos): importar tem
         # de CAIR na tela de extratos, onde as linhas novas aparecem - sem
         # navegar, quem importou de uma tela de gestao ficava la, sem ver
@@ -2715,7 +2720,9 @@ try {
             (Get-ComboCount $cbAnoC) -eq 2) ('itens=' + (Get-ComboCount $cbAnoC))
 
         # Extrato em ANSI: o parser tem de converte-los para UTF-8. O arquivo
-        # nao mexe em "saldos", entao a lista de anos nao muda.
+        # tem um registro so', de MAR/2024, e o balanco gravado fecha esse
+        # mes - 2024 e' um ano que AINDA NAO estava em "saldos", entao a
+        # lista de anos ganha um item e passa a 3.
         $dlgImp3 = Invoke-Importar $pImp $ofxAnsi
         Check 'dialogo de resultado da importacao ANSI' ($dlgImp3 -ne [IntPtr]::Zero)
         if ($dlgImp3 -ne [IntPtr]::Zero) {
@@ -2724,8 +2731,8 @@ try {
                 Wait-DialogClosed $dlgImp3)
         }
         $cbAnoD = Find-ComboHwnd $mainImp 100
-        Check 'cbYear segue com 2 anos (importacao nao mexe em "saldos")' (
-            (Get-ComboCount $cbAnoD) -eq 2) ('itens=' + (Get-ComboCount $cbAnoD))
+        Check 'cbYear ganhou o ano do fim do arquivo ANSI (3 anos)' (
+            (Get-ComboCount $cbAnoD) -eq 3) ('itens=' + (Get-ComboCount $cbAnoD))
 
         # Arquivo de outra conta: o aviso tem de vir no lugar do resultado.
         $dlgImp4 = Invoke-Importar $pImp $ofxOutraConta
@@ -2736,10 +2743,10 @@ try {
                 Wait-DialogClosed $dlgImp4)
         }
         # A recusa acontece antes de fechar/reabrir as queries, entao as
-        # combos ficam exatamente como estavam (2 anos, 1 conta).
+        # combos ficam exatamente como estavam (3 anos, 1 conta).
         $cbAnoE = Find-ComboHwnd $mainImp 100
         Check 'cbYear inalterado apos a recusa' (
-            (Get-ComboCount $cbAnoE) -eq 2) ('itens=' + (Get-ComboCount $cbAnoE))
+            (Get-ComboCount $cbAnoE) -eq 3) ('itens=' + (Get-ComboCount $cbAnoE))
         $pImp.Refresh()
         Check 'aplicacao viva ao fim das importacoes' (-not $pImp.HasExited)
     }
@@ -2808,6 +2815,50 @@ try {
             [string]$memoAnsi)
         Check 'memo acentuado do arquivo ANSI (1252) convertido p/ UTF-8' (
             $temAnsi)
+        # ---- o balanco do fim do periodo, que a importacao grava junto
+        # com as linhas na MESMA transacao. O Sq le a primeira coluna como
+        # INT, entao o balance (REAL) e' conferido contando a linha em que
+        # |balance - esperado| < 0.01 - o ponto decimal e' o do SQL (o
+        # locale da suite nao entra na conta).
+        # Periodo do arquivo UTF-8: 202401 ate' 202504, importado 2x. A
+        # abertura e' zero (nenhum saldo anterior a 2024-01) e a soma e' a
+        # de TODAS as linhas de "extratos" no periodo: -4860 (as 80 de
+        # 2025-01 do passo [8]) + 1311.65 (o arquivo) + 1311.65 (as MESMAS
+        # 4 repetidas na reimportacao) = -2236.70.
+        $qtdFim2504 = [Sq]::Consultar($minewDb,
+            "SELECT COUNT(*) FROM saldos WHERE enddate = '2025-04-30';")
+        Check 'fim de periodo do arquivo gravado em UMA linha' (
+            $qtdFim2504 -eq 1) ('linhas=' + $qtdFim2504)
+        $balFim2504 = [Sq]::Consultar($minewDb,
+            "SELECT COUNT(*) FROM saldos WHERE enddate = '2025-04-30'" +
+            ' AND ABS(balance + 2236.7) < 0.01;')
+        Check 'balanco do fim de periodo (reimportacao atualizou)' (
+            $balFim2504 -eq 1) ('linhas=' + $balFim2504)
+        # O arquivo ANSI traz um registro so', de MAR/2024: o periodo e' de
+        # um mes, entao abre em 2024-03-01 e fecha em 2024-03-31 com a soma
+        # de TODO o mes - so' a linha do proprio arquivo, -12.34 (nenhum
+        # saldo anterior a 2024-03: a abertura tambem e' zero).
+        $qtdFim2403 = [Sq]::Consultar($minewDb,
+            "SELECT COUNT(*) FROM saldos WHERE enddate = '2024-03-31';")
+        Check 'fim de periodo do ANSI gravado em UMA linha' (
+            $qtdFim2403 -eq 1) ('linhas=' + $qtdFim2403)
+        $balFim2403 = [Sq]::Consultar($minewDb,
+            "SELECT COUNT(*) FROM saldos WHERE enddate = '2024-03-31'" +
+            ' AND ABS(balance + 12.34) < 0.01;')
+        Check 'balanco do fim de periodo do ANSI (-12.34)' (
+            $balFim2403 -eq 1) ('linhas=' + $balFim2403)
+        # O arquivo RECUSADO traz um registro de 2024-06-15: se a recusa
+        # viesse depois de gravar, apareceria aqui um fim de 2024-06-30.
+        $qtdFim2406 = [Sq]::Consultar($minewDb,
+            "SELECT COUNT(*) FROM saldos WHERE enddate = '2024-06-30';")
+        Check 'arquivo recusado nao gravou saldo (sem 2024-06-30)' (
+            $qtdFim2406 -eq 0) ('linhas=' + $qtdFim2406)
+        # 175 do passo [8] + os DOIS balancos da importacao. A linha da
+        # "outra conta" do passo [10] ainda nao existe, entao esta' e' a
+        # contagem toda de "saldos".
+        $qtdSal9 = [Sq]::Consultar($minewDb, 'SELECT COUNT(*) FROM saldos;')
+        Check 'saldos = 175 do passo [8] + 2 balancos importados' (
+            $qtdSal9 -eq 177) ('qtd=' + $qtdSal9)
     }
 
     # ---------------------------- [10] cbAccount acompanha a tbContas no Voltar
@@ -2832,9 +2883,11 @@ try {
                 "INSERT INTO banks (id, name, alias)" +
                 " VALUES ('001', 'Banco do Brasil', 'BB');") -eq 1)
         # Um saldo de OUTRA conta, gravado com o arquivo livre: a tbSaldos
-        # so' pode mostrar as 175 linhas da conta selecionada no combo (a
-        # 176a, de outra conta, tem de ficar de fora) - e' a prova do
-        # filtro da grade de saldos.
+        # so' pode mostrar as 177 linhas da conta selecionada no combo (a
+        # 178a, de outra conta, tem de ficar de fora) - e' a prova do
+        # filtro da grade de saldos. As 177 sao as 175 do passo [8] mais os
+        # DOIS balancos que a importacao gravou (fim de 2025-04 e de
+        # 2024-03, ambos na mesma conta).
         Check 'saldo de outra conta gravado (passo [10])' (
             [Sq]::Executar($minewDb,
                 'INSERT INTO saldos (account_id, balance, enddate)' +
@@ -2887,7 +2940,7 @@ try {
             # nPage = visiveis, e o GetRecordCount do TSQLQuery vem com uma
             # linha a menos - logo linhas reais = nMax - nPage + 2
             # (VScrollRows, calibrado com contagens conhecidas). Tem de dar
-            # 175 (saldos da conta do combo), nunca as 176 do arquivo.
+            # 177 (saldos da conta do combo), nunca as 178 do arquivo.
             $gradeSal = [IntPtr]::Zero
             for ($t = 0; ($t -lt 20) -and ($gradeSal -eq [IntPtr]::Zero); $t++) {
                 Start-Sleep -Milliseconds 250
@@ -2901,8 +2954,8 @@ try {
                 }
             }
             $linhasSal = [UiTest]::VScrollRows($gradeSal)
-            Check 'tbSaldos mostra so as linhas da conta do combo (175 de 176)' (
-                $linhasSal -eq 175) ('linhas=' + $linhasSal +
+            Check 'tbSaldos mostra so as linhas da conta do combo (177 de 178)' (
+                $linhasSal -eq 177) ('linhas=' + $linhasSal +
                 ' grade=' + $gradeSal)
 
             # ---- enddate em EXECUCAO: o editor da coluna da data abre com o
@@ -3262,7 +3315,7 @@ try {
     # A digitacao na grade do passo [10] so' da para conferir no arquivo com a
     # conexao encerrada (mesmo motivo do delete de contas): a mascara deixou
     # 31/03/2028 na tela do registro novo e o campo tem de ter gravado
-    # 2028-03-31 (175 da conta + 1 da outra conta + 1 digitado).
+    # 2028-03-31 (177 da conta + 1 da outra conta + 1 digitado).
     $qtdIsoSal = [Sq]::Consultar($minewDb,
         "SELECT COUNT(*) FROM saldos WHERE enddate = '2028-03-31';")
     Check 'enddate digitado na grade gravado em AAAA-MM-DD (passo [10])' (
@@ -3270,7 +3323,7 @@ try {
         'editou=' + $editouData + ' qtd=' + $qtdIsoSal)
     $qtdSalTot = [Sq]::Consultar($minewDb, 'SELECT COUNT(*) FROM saldos;')
     Check 'linha digitada na grade entrou em saldos (passo [10])' (
-        $qtdSalTot -eq 177) ('qtd=' + $qtdSalTot)
+        $qtdSalTot -eq 179) ('qtd=' + $qtdSalTot)
     # O saldo digitado na coluna balance tem de ter ido junto com a data:
     # balance e' NOT NULL, entao sem ele o Post do VK_UP nao grava nada (e'
     # por isso que o registro novo do teste leva saldo + data).

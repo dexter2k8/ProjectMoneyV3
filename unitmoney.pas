@@ -1632,10 +1632,12 @@ begin
     try
       if not SQLQueryContas.Active then
         SQLQueryContas.Open;
-      // Recarrega as combos (a lista de anos vem de saldos, entao importar
-      // nao mexe nela), devolve a conta e o ano escolhidos e reabre as queries
-      // das duas grades ja' filtradas (extratos e saldos) - e' a grade de
-      // extratos que mostra o que acabou de entrar.
+      // Recarrega as combos - a lista de anos vem de saldos e a importacao
+      // GRAVA um saldo (o balanco do fim do periodo), entao o ano do fim do
+      // arquivo pode aparecer aqui. A conta e o ano escolhidos sao
+      // devolvidos depois do recarregar, e reabre as queries das duas grades
+      // ja' filtradas (extratos e saldos) - e' a grade de extratos que mostra
+      // o que acabou de entrar.
       CarregarFiltrosExtratos;
       indice := cbAccount.Items.IndexOf(contaTexto);
       if indice >= 0 then
