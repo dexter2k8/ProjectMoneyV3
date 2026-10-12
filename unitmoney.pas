@@ -60,6 +60,7 @@ type
     Separator2: TMenuItem;
     Separator4: TMenuItem;
     sbtnVoltar: TSpeedButton;
+    btnMonthClear: TSpeedButton;
     SQLite3ConnBancos: TSQLite3Connection;
     SQLTransactionBancos: TSQLTransaction;
     SQLQueryBanks: TSQLQuery;
@@ -115,6 +116,11 @@ type
     procedure BancoIdGetText(Sender: TField; var AText: string;
       DisplayText: Boolean);
     procedure BancoIdSetText(Sender: TField; const AText: string);
+    // "Excluir Mês" (btnMonthClear): apaga o mês da guia ativa - as linhas de
+    // "extratos" e o registro de "saldos" do mesmo fim de período, para TODAS
+    // as contas (é o mês que vira guia, não a conta). Não há desfazer, então
+    // o dialogo de confirmação vem antes de qualquer DELETE.
+    procedure btnMonthClearClick(Sender: TObject);
     procedure cbAccountChange(Sender: TObject);
     procedure cbYearChange(Sender: TObject);
     // Formatação da grade de extratos: os campos TEXT do SQLite viram ftMemo,
@@ -287,6 +293,13 @@ type
     // guia de mês (as telas de gestão), onde a grade está escondida e não há
     // mês a filtrar.
     function MesDaAba(ATab: TTabSheet): Integer;
+    // Regra de aparecimento do "Excluir Mês" (btnMonthClear): só na tela de
+    // extratos (guia de mês visível - ver o TabVisible no corpo), com
+    // database aberto (sem arquivo não há o que excluir) e com o "Show
+    // Controls" ligado, que é o que revela os controles do rodapé.
+    // PageControl1Change e o toggle usam esta MESMA função, para o botão não
+    // sobreviver a uma troca de página ou de arquivo.
+    function PodeExcluirMes: Boolean;
     // Grade de saldos da tbSaldos: mesma regra do filtro de extratos - só os
     // registros da conta escolhida no cbAccount (combo vazia não restringe).
     // É o único ponto de Open de SQLQuerySaldos: quem abre/reabre é aqui.
@@ -431,6 +444,10 @@ begin
   // ... mas o DBNavTrans mantém a regra própria (toggleShowControls) para,
   // quando o painel voltar, o navegador respeitar o toggle.
   DBNavTrans.Visible := exibindoExtrato and toggleShowControls.Checked;
+  // ... e o "Excluir Mês" é do MESMO grupo de controles do rodapé: nasce
+  // escondido, some nas telas de gestão e sem database, e respeita o toggle
+  // quando o painel voltar.
+  btnMonthClear.Visible := PodeExcluirMes;
 
   // Combos do cabeçalho: o de ano é só da tela de extratos; o de conta
   // continua visível na tbSaldos, porque é ele que filtra a grade de
@@ -747,6 +764,24 @@ begin
     Result := 12
   else
     Result := 0;
+end;
+
+function TFormMoney.PodeExcluirMes: Boolean;
+begin
+  // MesDaAba cobre a troca de pagina: ele devolve 0 fora das guias de mes (as
+  // tres telas de gestao), entao o botao some junto com o rodape da tela
+  // errada - e devolve 0 tambem para ActivePage nulo, que e' o estado da
+  // pagina sem guia ativa. (E' tambem o que segura a ordem dos testes: o
+  // ActivePage so' e' olhado depois de ter passado por esses dois.)
+  // O TabVisible cobre o caso inverso: database aberto e NENHUM mes com saldo
+  // - ai' o AtualizarAbasMes nao acha guia e o LCL deixa a pagina sem guia
+  // ativa, com o AtualizarAbasMes voltando para tbJan, que e' a pagina de
+  // ENTRADA mas com a guia escondida. Sem guia na tela nao ha' mes na tela, e
+  // apagar o mes 01 do ano seria apagar por suposicao. (E' tambem o que
+  // segura a ordem dos testes: o ActivePage so' e' olhado depois de existir.)
+  Result := DatabaseAberto and toggleShowControls.Checked and
+    (MesDaAba(PageControl1.ActivePage) > 0) and
+    PageControl1.ActivePage.TabVisible;
 end;
 
 // As guias JAN..DEZ são o cabeçalho de navegação da tela de extratos e só
@@ -2164,6 +2199,95 @@ end;
 procedure TFormMoney.toggleShowControlsClick(Sender: TObject);
 begin
   DBNavTrans.Visible := toggleShowControls.Checked;
+  btnMonthClear.Visible := PodeExcluirMes;
+end;
+
+procedure TFormMoney.btnMonthClearClick(Sender: TObject);
+var
+  ano, mes, apagados, indice: Integer;
+  erro, mesTexto, contaTexto, anoTexto: string;
+begin
+  // Botão escondido é o caminho das telas de gestão (e o da navegação sem
+  // database); e mesmo visível a guia ativa pode ter virado outra entre o
+  // clique e aqui. Só sai daqui com um mês em mãos.
+  if not PodeExcluirMes then
+    Exit;
+  if not PeriodoExtratos(ano, mes) then
+    Exit;
+
+  // Mês e ano vêm do MESMO filtro que define a tela: a guia ativa dá o mês e
+  // o cbYear o ano (PeriodoExtratos é o que a grade usa para dizer "este mês").
+  mesTexto := Format('%.2d/%d', [mes, ano]);
+  // Não há desfazer e não é recorte de conta: o aviso diz o mês INTEIRO, para
+  // TODAS as contas - é o mês que vira guia, não a conta.
+  if MessageDlg('Excluir todas as transações do mês ' + mesTexto +
+    '? ' + 'O registro do mês também sai de "saldos", então a guia deixa de ' +
+    'aparecer. Esta ação não pode ser desfeita.',
+    mtConfirmation, [mbYes, mbNo], 0) <> mrYes then
+    Exit;
+
+  // A recarga das combos no fim recomeça no primeiro item, então as duas
+  // escolhas (conta e ano) são guardadas para devolver o usuário para onde
+  // ele estava.
+  contaTexto := cbAccount.Text;
+  anoTexto := cbYear.Text;
+
+  // As queries fecham antes da gravacao (mesmo motivo do miImport e do
+  // miImpTrans): o commit do ExcluirMes nao pode encontrar sentenca em
+  // andamento. O finally religa tudo e refaz combos + guias + grades, e vale
+  // mesmo quando a exclusao falha no meio.
+  erro := '';
+  apagados := 0;
+  try
+    try
+      SQLQueryContas.Close;
+      SQLQuerySaldos.Close;
+      SQLQueryExtratos.Close;
+      apagados := ExcluirMes(SQLite3ConnContas, ano, mes);
+    except
+      on E: Exception do
+        erro := 'Não foi possível excluir o mês ' + mesTexto + '.' +
+          LineEnding + E.Message;
+    end;
+  finally
+    try
+      if not SQLQueryContas.Active then
+        SQLQueryContas.Open;
+      // A lista de anos vem de "saldos", e o mês excluído pode ter sido o
+      // ÚNICO do ano - o ano então some do combo. O CarregarFiltrosExtratos
+      // já refaz as guias (AtualizarAbasMes) pelo novo conteúdo da tabela, e
+      // o ItemIndex do cbYear restaurado reexecuta esse recalculo, agora no
+      // ano que o usuário estava olhando.
+      CarregarFiltrosExtratos;
+      indice := cbAccount.Items.IndexOf(contaTexto);
+      if indice >= 0 then
+        cbAccount.ItemIndex := indice;
+      indice := cbYear.Items.IndexOf(anoTexto);
+      if indice >= 0 then
+        cbYear.ItemIndex := indice;
+      AplicarFiltroExtratos;
+      AplicarFiltroSaldos;
+    except
+      on E: Exception do
+        if erro = '' then
+          erro := 'O mês ' + mesTexto + ' foi excluído, mas a tela não pôde ' +
+            'ser atualizada.' + LineEnding + E.Message;
+    end;
+  end;
+
+  if erro <> '' then
+  begin
+    MessageDlg(erro, mtError, [mbOK], 0);
+    Exit;
+  end;
+
+  // O usuário tem de saber as DUAS coisas: o que sumiu da grade e que a guia
+  // do mês também sumiu - foi o registro de "saldos" que a sustentava.
+  MessageDlg(IntToStr(apagados) + ' ' +
+    Plural(apagados, 'transação excluída do mês ',
+    'transações excluídas do mês ') + mesTexto + '.' + LineEnding +
+    'O registro do mês também saiu de "saldos", então a guia deixou de ' +
+    'aparecer.', mtInformation, [mbOK], 0);
 end;
 
 end.

@@ -35,7 +35,11 @@
         escolhida para um arquivo no MESMO formato, que sai igual ao banco
         (cabecalho do modelo sem a ID do banco, data em AAAA-MM-DD, valor
         com ponto e o memo com aspas devolvido inteiro na reentrada)
-    [12] Nenhum crash registrado no log de eventos do Windows (WER)
+    [12] Excluir Mes (btnMonthClear) -> nasce escondido, aparece com o "Show
+        Controls", pede confirmacao e apaga o MES DA GUIA ATIVA: as linhas de
+        "extratos" (todas as contas) e o registro de "saldos" do mesmo fim de
+        periodo, que e' o que faz a guia do mes sumir da tela
+    [13] Nenhum crash registrado no log de eventos do Windows (WER)
 
   Sai com código 0 quando tudo passa, 1 quando há alguma falha.
   As mensagens "arquivo(linha,col) severidade: mensagem" alimentam o
@@ -168,6 +172,36 @@ public class UiTest {
             return true;
         }, IntPtr.Zero);
         return found;
+    }
+    // Botoes de uma confirmacao do LCL, que no Windows vira TaskDialog: ali a
+    // mensagem e' desenhada na PROPRIO janela (DialogText volta vazio, sem
+    // filho que se leia) e os botoes sao Button filhos SEM id de dialogo
+    // (GetDlgCtrlID devolve 0) e com legenda no idioma da maquina - "&Yes"/
+    // "&No", "&Sim"/"&Nao". A POSICAO e' a unica coisa que nao muda: Sim e' o
+    // da ESQUERDA e Nao o da DIREITA, entao os dois sao devolvidos ja' em
+    // ordem de X. Zero quando nao ha' os dois - e' o caso de nao ser uma
+    // confirmacao de dois botoes (ou do dialogo ainda nao estar montado).
+    public static IntPtr[] ConfirmButtons(IntPtr dlg) {
+        var bots = new System.Collections.Generic.List<IntPtr>();
+        var esq = new System.Collections.Generic.List<int>();
+        EnumChildWindows(dlg, (h, l) => {
+            var c = new StringBuilder(64); GetClassName(h, c, 64);
+            if (c.ToString() != "Button") return true;
+            RECT r;
+            if (!GetWindowRect(h, out r)) return true;
+            bots.Add(h); esq.Add(r.left);
+            return true;
+        }, IntPtr.Zero);
+        // Sao dois, entao uma insercao ja' ordena.
+        for (int i = 1; i < bots.Count; i++) {
+            IntPtr bh = bots[i]; int bx = esq[i]; int j = i - 1;
+            while ((j >= 0) && (esq[j] > bx)) { bots[j + 1] = bots[j]; esq[j + 1] = esq[j]; j--; }
+            bots[j + 1] = bh; esq[j + 1] = bx;
+        }
+        IntPtr[] res = new IntPtr[2];
+        res[0] = (bots.Count > 0) ? bots[0] : IntPtr.Zero;
+        res[1] = (bots.Count > 1) ? bots[bots.Count - 1] : IntPtr.Zero;
+        return res;
     }
     // WM_SETTEXT sincrono (seguro liberar a memoria em seguida).
     public static bool SetText(IntPtr h, string s) {
@@ -1106,7 +1140,7 @@ if ($dbExisted) {
 
 try {
     # ------------------------------------------------ [1] compilação/lint
-    Write-Banner '[1/12] Compilacao e lint (lazbuild -B)'
+    Write-Banner '[1/13] Compilacao e lint (lazbuild -B)'
     if ($SkipLint) {
         Write-Output '   (pulado por -SkipLint)'
     }
@@ -1680,7 +1714,7 @@ try {
         'gridTransPrepareCanvas nao colore a coluna saldo')
 
     # ------------------------------------------------ [2] cria o banco
-    Write-Banner '[2/12] Sem banks.db -> deve criar o arquivo'
+    Write-Banner '[2/13] Sem banks.db -> deve criar o arquivo'
     if (Test-Path $db) { Remove-Item $db -Force }
     $r = Invoke-App $RunSeconds
     Test-NoCrash $r 'aplicacao permanece viva (sem crash)'
@@ -1694,7 +1728,7 @@ try {
     }
 
     # ------------------------------------------------ [3] já existe
-    Write-Banner '[3/12] Com banks.db -> nao deve recriar nem alterar'
+    Write-Banner '[3/13] Com banks.db -> nao deve recriar nem alterar'
     if (Test-Path $db) {
         $hashBefore = Get-Hash $db
         $r = Invoke-App $RunSeconds
@@ -1706,7 +1740,7 @@ try {
     }
 
     # ------------------------------------------------ [4] DLL ausente
-    Write-Banner '[4/12] Sem sqlite3.dll -> erro deve ser tratado'
+    Write-Banner '[4/13] Sem sqlite3.dll -> erro deve ser tratado'
     if ($SkipDllTest) {
         Write-Output '   (pulado por -SkipDllTest)'
     }
@@ -1735,7 +1769,7 @@ try {
     }
 
     # ------------------------------------------------ [5] miNew -> database
-    Write-Banner '[5/12] Novo Database (miNew) -> cria .db com as 3 tabelas'
+    Write-Banner '[5/13] Novo Database (miNew) -> cria .db com as 3 tabelas'
     if (Test-Path $minewDb) { Remove-Item $minewDb -Force -ErrorAction SilentlyContinue }
     $pNovo = $null
     # Qualquer excecao no fluxo tem de virar FALHA: se escapasse em silencio,
@@ -1863,7 +1897,7 @@ try {
     }
 
     # ------------------------------------------------ [6] miOpen -> abrir .db
-    Write-Banner '[6/12] Abrir Database (miOpen) -> abre o valido e rejeita o invalido'
+    Write-Banner '[6/13] Abrir Database (miOpen) -> abre o valido e rejeita o invalido'
     $pAbrir  = $null
     $hashAbr = $null
     # O passo [4] apaga banks.db e ele so' e recriado no passo final: garante o
@@ -2016,7 +2050,7 @@ try {
     }
 
     # ------------------------------------------------ [7] miClose -> fechar
-    Write-Banner '[7/12] Fechar Database (miClose) encerra a conexao; Sair (miExit) encerra o app'
+    Write-Banner '[7/13] Fechar Database (miClose) encerra a conexao; Sair (miExit) encerra o app'
     $pFecha = $null
     # Mesma protecao dos passos de interface: excecao tem de virar FALHA.
     $ErrorActionPreference = 'Stop'
@@ -2189,7 +2223,7 @@ try {
     }
 
     # ---------------- [8] miList/miGerCon/miGerSal -> tbBancos/tbContas/tbSaldos
-    Write-Banner '[8/12] Voltar sem database -> estado vazio; com database -> fica'
+    Write-Banner '[8/13] Voltar sem database -> estado vazio; com database -> fica'
     $pNav = $null
     # Mesma protecao do passo do miNew: excecao tem de virar FALHA.
     $ErrorActionPreference = 'Stop'
@@ -2650,7 +2684,7 @@ try {
     }
 
     # ------------------------------------ [9] importar OFC/OFX (miImport)
-    Write-Banner '[9/12] Importar OFC/OFX -> linhas novas entram em "extratos"'
+    Write-Banner '[9/13] Importar OFC/OFX -> linhas novas entram em "extratos"'
     $pImp  = $null
     $antes = 0
     # Mesma protecao dos demais passos: excecao tem de virar FALHA.
@@ -3115,7 +3149,7 @@ try {
     }
 
     # ---------------------------- [10] cbAccount acompanha a tbContas no Voltar
-    Write-Banner '[10/12] "Voltar" da tbContas remonta cbAccount'
+    Write-Banner '[10/13] "Voltar" da tbContas remonta cbAccount'
     $pCb = $null
     # Mesma protecao dos demais passos: excecao tem de virar FALHA.
     $ErrorActionPreference = 'Stop'
@@ -3637,7 +3671,7 @@ try {
     }
 
     # ---------------------------- [11] importar transacoes (miImpTrans)
-    Write-Banner '[11/12] Importar Transacoes (CSV) -> substitui extratos e saldos'
+    Write-Banner '[11/13] Importar Transacoes (CSV) -> substitui extratos e saldos'
     $pCsv = $null
     # Mesma protecao dos demais passos: excecao tem de virar FALHA.
     $ErrorActionPreference = 'Stop'
@@ -4137,8 +4171,362 @@ try {
             $somasMes.Count + ' divergentes=' + $mesesDiferentes)
     }
 
-    # ------------------------------------------------ [12] estado final + WER
-    Write-Banner '[12/12] Estado final e log de crashes do Windows'
+    # ---------------------------- [12] excluir mes (btnMonthClear)
+    Write-Banner '[12/13] Excluir Mes (btnMonthClear) -> apaga o mes e some a guia'
+    $pMes = $null
+    # Mesma protecao dos demais passos: excecao tem de virar FALHA.
+    $ErrorActionPreference = 'Stop'
+    try {
+        # O banco ve' do passo [11] (o CSV importado la': meses inteiros em
+        # "extratos" e UM registro por mes em "saldos") - e' o unico fixture
+        # da suite que deixa a tela de extratos de p' com guia de mes.
+        Check 'database do passo [11] disponivel (passo [12])' (Test-Path $minewDb)
+
+        # ANTES de abrir: monta o cenario de DUAS contas. "Todos os registros
+        # do mes" e' do MES e nao da conta que a grade mostra - a guia de mes
+        # nasce de "saldos" SEM filtro de conta (AtualizarAbasMes nem passa
+        # condicao de conta), entao apagar so' a conta visivel deixaria as
+        # demais contas com transacao de mes apagado, sem guia e sem saldo de
+        # fim de periodo. Para provar isto, a segunda conta ganha um saldo e
+        # uma transacao em CADA mes que vira guia no ano mais recente.
+        # A lista de meses vem da MESMA consulta de AtualizarAbasMes, feita
+        # mes a mes porque o helper Consultar devolve so' o primeiro valor da
+        # primeira linha.
+        $anoMes = [Sq]::Consultar($minewDb,
+            'SELECT DISTINCT CAST(substr(enddate, 1, 4) AS INTEGER) FROM saldos' +
+            ' ORDER BY 1 DESC LIMIT 1;')
+        Check 'ano mais recente de "saldos" lido (passo [12])' ($anoMes -gt 0) (
+            'ano=' + $anoMes)
+        $guiasMes = @()
+        for ($m = 1; $m -le 12; $m++) {
+            $temSaldo = [Sq]::Consultar($minewDb,
+                "SELECT COUNT(*) FROM saldos WHERE substr(enddate, 1, 4) = '" +
+                $anoMes + "' AND substr(enddate, 6, 2) = '" + ('{0:d2}' -f $m) +
+                "';")
+            if ($temSaldo -gt 0) { $guiasMes += $m }
+        }
+        Check 'o ano tem meses com guia (passo [12])' ($guiasMes.Count -gt 0) (
+            'meses=' + $guiasMes.Count)
+
+        $novaConta = [Sq]::Executar($minewDb,
+            "INSERT INTO contas (acctid, accttype, bankid, branchid, description)" +
+            " VALUES ('456', 'SAVINGS', 1, '0002', 'Conta 2 do teste');")
+        Check 'segunda conta criada (passo [12])' ($novaConta -ge 1) (
+            'Executar=' + $novaConta)
+        # O id vem do MAX(id) depois do INSERT: id e' AUTOINCREMENT e a conta 1
+        # do passo [11] ja' existe, entao essa e' sempre a 2 - mas nao se
+        # depende disso.
+        $conta2 = [Sq]::Consultar($minewDb, 'SELECT MAX(id) FROM contas;')
+        Check 'id da segunda conta lido (passo [12])' ($conta2 -gt 1) (
+            'id=' + $conta2)
+        $linhasConta2 = 0
+        foreach ($m in $guiasMes) {
+            $mesTxt = '{0:d2}' -f $m
+            [void][Sq]::Executar($minewDb,
+                "INSERT INTO saldos (account_id, balance, enddate) VALUES (" +
+                $conta2 + ", 5.00, '" + $anoMes + "-" + $mesTxt + "-15');")
+            [void][Sq]::Executar($minewDb,
+                "INSERT INTO extratos (account_id, trntype, dtposted, trnamt, memo)" +
+                " VALUES (" + $conta2 + ", 'DEBIT', '" + $anoMes + "-" + $mesTxt +
+                "-15', -1.25, 'conta 2');")
+            $linhasConta2 += [Sq]::Consultar($minewDb,
+                "SELECT COUNT(*) FROM extratos WHERE account_id = " + $conta2 +
+                " AND substr(dtposted, 1, 7) = '" + $anoMes + "-" + $mesTxt + "';")
+        }
+        Check 'a segunda conta tem transacao em TODOS os meses com guia' (
+            $linhasConta2 -eq $guiasMes.Count) (
+            'linhas=' + $linhasConta2 + ' meses=' + $guiasMes.Count)
+
+        # As provas de C'ODIGO ficam juntas das provas de comportamento: o
+        # botao nasce oculto no .lfm e o handler tem de confirmar antes de
+        # apagar - e apagar as DUAS tabelas na mesma transa'c'a'o.
+        $blocoExcluir = ''
+        $posExcluir = $dbTexto.LastIndexOf('function ExcluirMes(')
+        if ($posExcluir -ge 0) { $blocoExcluir = $dbTexto.Substring($posExcluir) }
+        Check 'ExcluirMes apaga as duas tabelas na mesma transacao (.pas)' (
+            ($blocoExcluir -match 'DELETE FROM extratos') -and
+            ($blocoExcluir -match 'DELETE FROM saldos') -and
+            ($blocoExcluir -match 'trans\.Commit')) (
+            'ExcluirMes sem as duas exclusoes na mesma transacao')
+        # Os predicados tem de ser os MESMOS da tela: sem o CASE de dtposted um
+        # lancamento em AAAAMMDD (formato OFX) sobreviveria ao apagar o mes.
+        Check 'ExcluirMes usa o mesmo CASE de dtposted do filtro (.pas)' (
+            $blocoExcluir -match "substr\(dtposted, 5, 1\) = ''-''") (
+            'ExcluirMes sem o CASE dos dois formatos de dtposted')
+        $blocoBtn = ''
+        if ($pasTexto -match '(?s)procedure TFormMoney\.btnMonthClearClick.*?\nend;') {
+            $blocoBtn = $Matches[0]
+        }
+        Check 'btnMonthClearClick confirma antes de excluir e recarrega (.pas)' (
+            ($blocoBtn -match 'mtConfirmation') -and
+            ($blocoBtn -match 'mrYes') -and
+            ($blocoBtn -match 'ExcluirMes') -and
+            ($blocoBtn -match 'IntToStr\(apagados\)') -and
+            ($blocoBtn -match 'SQLQueryContas\.Close') -and
+            ($blocoBtn -match 'AtualizarAbasMes|CarregarFiltrosExtratos')) (
+            'btnMonthClearClick sem confirmacao, fechar-as-queries ou recarga')
+        $blocoMenuBtn = Get-LfmBlock $lfmTexto 'btnMonthClear: TSpeedButton'
+        Check 'btnMonthClear nasce oculto e ligado ao handler (.lfm)' (
+            ($blocoMenuBtn -ne '') -and
+            $blocoMenuBtn.Contains('Visible = False') -and
+            $blocoMenuBtn.Contains('OnClick = btnMonthClearClick')) (
+            'btnMonthClear sem Visible=False ou sem OnClick no .lfm')
+
+        # Abre pelo mesmo caminho do usuario - miOpen carrega as combos e as
+        # guias de mes (AtualizarAbasMes) pelo conteudo de "saldos".
+        $pMes = Start-Process -FilePath $exe -WorkingDirectory $root -PassThru
+        Start-Sleep -Seconds 3
+        $pMes.Refresh()
+        $mainMes = $pMes.MainWindowHandle
+        Check 'aplicacao abriu para o passo [12]' ($mainMes -ne [IntPtr]::Zero)
+
+        $dlgOpenMes = Invoke-MenuFileDialog $pMes 'Abrir Database'
+        Check 'dialogo "Abrir" abriu (passo [12])' ($dlgOpenMes -ne [IntPtr]::Zero)
+        if ($dlgOpenMes -ne [IntPtr]::Zero) {
+            $null = Set-FileDialogName $dlgOpenMes $minewDb
+            Check 'dialogo "Abrir" fechou (passo [12])' (Wait-DialogClosed $dlgOpenMes)
+        }
+        $null = Wait-Interface $mainMes $true
+
+        # O rodape' e' a janela de altura 50 MAIS BAIXA da tela (o pnHeader tem
+        # a mesma altura, mas fica no topo). Os dois controles de que este passo
+        # precisa vivem dentro dele, e nenhum dos dois e' achavel por classe:
+        # o toggle e' uma Button generica e o btnMonthClear e' TSpeedButton,
+        # desenhado direto no painel - SEM janela propria.
+        $pnFooter = [IntPtr]::Zero
+        $melhorTop = -1
+        foreach ($w in @([UiTest]::Visible($mainMes))) {
+            if ($w -match '(\d+),(\d+) (\d+)x(\d+)$') {
+                $y = [int]$Matches[2]
+                $h = [int]$Matches[4]
+                if (($h -eq 50) -and ($y -gt $melhorTop)) {
+                    $melhorTop = $y
+                    if ($w -match 'id=(\d+)') { $pnFooter = [IntPtr][int64]$Matches[1] }
+                }
+            }
+        }
+        Check 'rodape da tela de extratos encontrado (passo [12])' (
+            $pnFooter -ne [IntPtr]::Zero) ('hwnd=' + $pnFooter)
+        # O toggle e' a unica Button com este Caption no .lfm (ASCII, entao
+        # pode ser casada direto aqui).
+        $toggleMes = [IntPtr]::Zero
+        foreach ($w in @([UiTest]::Visible($mainMes))) {
+            if ($w -match '^Button \| id=(\d+) \| "Show Controls"') {
+                $toggleMes = [IntPtr][int64]$Matches[1]
+            }
+        }
+        Check 'toggle "Show Controls" encontrado (passo [12])' (
+            $toggleMes -ne [IntPtr]::Zero) ('hwnd=' + $toggleMes)
+
+        # Centros dos dois, pelo Left/Top do .lfm: toggleShowControls em
+        # (13+45, 12+12) e btnMonthClear em (368+44, 14+11). O clique e'
+        # POSTADO no painel, que e' quem roteia o mouse para o filho.
+        # (O btnMonthClear fica em x=368..456 e o navegador, quando aparecer,
+        # ocupa 112..353 - entao nenhum dos dois come o clique do outro.)
+
+        # [2] Estado inicial: o botao nasce oculto (Visible = False no .lfm e
+        # nenhum dos dois gatilhos de PodeExcluirMes ligados), entao um clique
+        # na AREA dele nao abre dialogo nenhum - nao ha' o que receber o clique.
+        if ($pnFooter -ne [IntPtr]::Zero) {
+            [void][UiTest]::ClickOn($pnFooter, 412, 25)
+            Start-Sleep -Milliseconds 700
+            $dlgOculto = [UiTest]::FindDialog([uint32]$pMes.Id)
+            Check 'btnMonthClear oculto no inicio (clique nao abre nada)' (
+                $dlgOculto -eq [IntPtr]::Zero) ('hwnd=' + $dlgOculto)
+            if ($dlgOculto -ne [IntPtr]::Zero) {
+                [void][UiTest]::PostMessage($dlgOculto, 0x0010, [IntPtr]::Zero,
+                    [IntPtr]::Zero)
+                [void](Wait-DialogClosed $dlgOculto)
+            }
+        }
+
+        # [1] Exibido ao clicar no toggle: o MESMO clique na area do botao tem
+        # de abrir o dialogo de confirmacao a partir daqui.
+        if ($toggleMes -ne [IntPtr]::Zero) {
+            [void][UiTest]::PostMessage($toggleMes, 0x00F5, [IntPtr]::Zero,
+                [IntPtr]::Zero)                                           # BM_CLICK
+            Start-Sleep -Milliseconds 700
+        }
+        # Meses do ano: ja' calculados ANTES de abrir (e com os da segunda
+        # conta), que e' o mesmo conjunto que AtualizarAbasMes monta - a
+        # segunda conta gravou saldo nos MESMESOS meses, entao o numero de
+        # guias nao muda.
+        $guiaHwnd = Find-TabHwnd $mainMes
+        Check 'guias visiveis batem com os meses de "saldos" (passo [12])' (
+            ([UiTest]::TabCount($guiaHwnd)) -eq $guiasMes.Count) (
+            'guias=' + [UiTest]::TabCount($guiaHwnd) + ' saldos=' + $guiasMes.Count)
+        # O Win32 so' insere as guias COM TabVisible, e na ordem JAN..DEZ -
+        # entao o indice da guia ativa e' um indice nessa mesma lista.
+        $selMes = [UiTest]::TabSel($guiaHwnd)
+        Check 'guia ativa identificada (passo [12])' (
+            ($selMes -ge 0) -and ($selMes -lt $guiasMes.Count)) ('sel=' + $selMes)
+        $mesAlvo = 0
+        if (($selMes -ge 0) -and ($selMes -lt $guiasMes.Count)) {
+            $mesAlvo = $guiasMes[$selMes]
+        }
+        $mesTextoAlvo = ('{0:d2}/{1}' -f $mesAlvo, $anoMes)
+        $mesChave = '{0:d2}' -f $mesAlvo
+        $sqlMesExtratos =
+            'SELECT COUNT(*) FROM extratos WHERE substr(dtposted, 1, 4) = ' +
+            "'" + $anoMes + "' AND (CASE WHEN substr(dtposted, 5, 1) = '-'" +
+            ' THEN substr(dtposted, 6, 2) ELSE substr(dtposted, 5, 2) END) = ' +
+            "'" + $mesChave + "';"
+        $sqlMesSaldos = "SELECT COUNT(*) FROM saldos WHERE substr(enddate, 1, 4)" +
+            " = '" + $anoMes + "' AND substr(enddate, 6, 2) = '" + $mesChave + "';"
+        $extMes = [Sq]::Consultar($minewDb, $sqlMesExtratos)
+        $salMes = [Sq]::Consultar($minewDb, $sqlMesSaldos)
+        Check 'mes da guia ativa tem transacao e registro de saldo' (
+            ($extMes -gt 0) -and ($salMes -gt 0)) (
+            $mesTextoAlvo + ' extratos=' + $extMes + ' saldos=' + $salMes)
+
+        # [3] Com o toggle ligado o clique na area do botao abre o dialogo.
+        $dlgConf = [IntPtr]::Zero
+        if ($pnFooter -ne [IntPtr]::Zero) {
+            [void][UiTest]::ClickOn($pnFooter, 412, 25)
+            for ($t = 0; ($t -lt 20) -and ($dlgConf -eq [IntPtr]::Zero); $t++) {
+                Start-Sleep -Milliseconds 250
+                $dlgConf = [UiTest]::FindDialog([uint32]$pMes.Id)
+            }
+        }
+        Check 'btnMonthClear visivel ao ligar o "Show Controls"' (
+            $dlgConf -ne [IntPtr]::Zero) ('hwnd=' + $dlgConf)
+        if ($dlgConf -ne [IntPtr]::Zero) {
+            # O MessageDlg do LCL vira TaskDialog no Windows: a mensagem e'
+            # desenhada na PROPRIO janela, sem filho que DialogText leia (e'
+            # a mesma limitacao que o passo [9] ja'encontra no aviso do
+            # miImport). A prova do que foi pedido e' entao o BANCO, la' em
+            # baixo - e aqui fica so' a prova de que a caixa que abriu e' a de
+            # confirmacao: ela tem os DOIS botoes (Sim a esquerda, Nao a
+            # direita - a legenda vem do idioma da maquina, a posicao nao).
+            $botoes = [UiTest]::ConfirmButtons($dlgConf)
+            $btnSim = $botoes[0]
+            $btnNao = $botoes[1]
+            Check 'confirmacao tem os botoes Sim (esquerda) e Nao (direita)' (
+                ($btnSim -ne [IntPtr]::Zero) -and ($btnNao -ne [IntPtr]::Zero)) (
+                'sim=' + $btnSim + ' nao=' + $btnNao)
+
+            # [4] "Nao" e' o caminho que NAO apaga: o clique no botao fecha o
+            # dialogo e o banco tem de ficar intocado.
+            $fechouNao = $false
+            if ($btnNao -ne [IntPtr]::Zero) {
+                [void][UiTest]::PostMessage($btnNao, 0x00F5, [IntPtr]::Zero,
+                    [IntPtr]::Zero)                                       # BM_CLICK
+                $fechouNao = Wait-DialogClosed $dlgConf
+            }
+            Check 'confirmacao fechada ao responder Nao' $fechouNao (
+                'hwnd=' + $dlgConf)
+            if (-not $fechouNao) {
+                # Nao deixar caixa pendurada atrapalhando as conferencias
+                # seguintes (mesmo caminho dos demais dialogos da suite).
+                [void][UiTest]::PostMessage($dlgConf, 0x0010, [IntPtr]::Zero,
+                    [IntPtr]::Zero)                                       # WM_CLOSE
+                [void](Wait-DialogClosed $dlgConf)
+            }
+            Check 'banco intocado ao cancelar a exclusao' (
+                (([Sq]::Consultar($minewDb, $sqlMesExtratos)) -eq $extMes) -and
+                (([Sq]::Consultar($minewDb, $sqlMesSaldos)) -eq $salMes)) (
+                'extratos=' + [Sq]::Consultar($minewDb, $sqlMesExtratos) +
+                ' saldos=' + [Sq]::Consultar($minewDb, $sqlMesSaldos))
+
+            # ... e "Sim" e' o que apaga - o MESMO clique no botao de novo,
+            # porque o cancelar nao mexeu em nada.
+            [void][UiTest]::ClickOn($pnFooter, 412, 25)
+            $dlgConf2 = [IntPtr]::Zero
+            for ($t = 0; ($t -lt 20) -and ($dlgConf2 -eq [IntPtr]::Zero); $t++) {
+                Start-Sleep -Milliseconds 250
+                $dlgConf2 = [UiTest]::FindDialog([uint32]$pMes.Id)
+            }
+            Check 'confirmacao reaberta para responder Sim' (
+                $dlgConf2 -ne [IntPtr]::Zero) ('hwnd=' + $dlgConf2)
+            $fechouSim = $false
+            if ($dlgConf2 -ne [IntPtr]::Zero) {
+                $btnSim2 = ([UiTest]::ConfirmButtons($dlgConf2))[0]
+                if ($btnSim2 -ne [IntPtr]::Zero) {
+                    [void][UiTest]::PostMessage($btnSim2, 0x00F5,
+                        [IntPtr]::Zero, [IntPtr]::Zero)                    # BM_CLICK
+                    $fechouSim = Wait-DialogClosed $dlgConf2
+                }
+                if (-not $fechouSim) {
+                    [void][UiTest]::PostMessage($dlgConf2, 0x0010,
+                        [IntPtr]::Zero, [IntPtr]::Zero)                    # WM_CLOSE
+                    [void](Wait-DialogClosed $dlgConf2)
+                }
+            }
+            Check 'confirmacao fechada ao responder Sim' $fechouSim
+            # O resultado e' um MessageDlg de informacao - e e' ele que prova
+            # que o handler terminou sem erro (sem ele, ou a exclusao falhou ou
+            # o handler parou no meio do caminho).
+            $dlgRes = Wait-Warning ([uint32]$pMes.Id)
+            Check 'resultado da exclusao exibido' ($dlgRes -ne [IntPtr]::Zero) (
+                'hwnd=' + $dlgRes)
+            if ($dlgRes -ne [IntPtr]::Zero) {
+                [void][UiTest]::PostMessage($dlgRes, 0x0010, [IntPtr]::Zero,
+                    [IntPtr]::Zero)                                       # WM_CLOSE
+                Check 'resultado dispensado' (Wait-DialogClosed $dlgRes)
+            }
+        }
+
+        # As duas provas do pedido: sumiram as linhas do mes em "extratos" E o
+        # registro de "saldos" que sustentava a guia. O arquivo e' lido direto
+        # (sem a conexao da aplicacao), que e' o unico jeito de conferir.
+        Check 'transacoes do mes excluidas de "extratos"' (
+            ([Sq]::Consultar($minewDb, $sqlMesExtratos)) -eq 0) (
+            'restam=' + [Sq]::Consultar($minewDb, $sqlMesExtratos))
+        Check 'registro do mes excluido de "saldos"' (
+            ([Sq]::Consultar($minewDb, $sqlMesSaldos)) -eq 0) (
+            'restam=' + [Sq]::Consultar($minewDb, $sqlMesSaldos))
+        # ... e por CONTA, nao so' pela conta da grade: a segunda conta tinha
+        # transacao e saldo nesse MESMO mes, e as duas tem de ter saido junto -
+        # e' o que separa "apagar o MES" de "apagar o que a grade mostra".
+        $sqlConta2Mes = 'SELECT COUNT(*) FROM extratos WHERE account_id = ' +
+            $conta2 + ' AND substr(dtposted, 1, 4) = ' + "'" + $anoMes +
+            "' AND (CASE WHEN substr(dtposted, 5, 1) = '-' THEN substr(dtposted, 6, 2)" +
+            ' ELSE substr(dtposted, 5, 2) END) = ' + "'" + $mesChave + "';"
+        Check 'transacoes de OUTRA conta do mes tambem excluidas' (
+            ([Sq]::Consultar($minewDb, $sqlConta2Mes)) -eq 0) (
+            'restam=' + [Sq]::Consultar($minewDb, $sqlConta2Mes))
+        $sqlConta2SaldoMes =
+            'SELECT COUNT(*) FROM saldos WHERE account_id = ' + $conta2 +
+            " AND substr(enddate, 1, 4) = '" + $anoMes +
+            "' AND substr(enddate, 6, 2) = '" + $mesChave + "';"
+        Check 'saldo de OUTRA conta do mes tambem excluido' (
+            ([Sq]::Consultar($minewDb, $sqlConta2SaldoMes)) -eq 0) (
+            'restam=' + [Sq]::Consultar($minewDb, $sqlConta2SaldoMes))
+        # ... mas so' ESSE mes: os demais da segunda conta ficam, que e' a prova
+        # de que o DELETE foi do MES (e nao da tabela inteira, nem do ano todo).
+        $restamConta2 = [Sq]::Consultar($minewDb,
+            'SELECT COUNT(*) FROM extratos WHERE account_id = ' + $conta2 + ';')
+        Check 'meses fora do alvo ficaram intocados' (
+            $restamConta2 -eq ($linhasConta2 - 1)) (
+            'restam=' + $restamConta2 + ' esperado=' + ($linhasConta2 - 1))
+        # ... e a consequencia na tela: uma guia a menos, e a que sobrou na
+        # mesma posicao e' OUTRO mes (a exclusao nao pode deixar a faixa com a
+        # guia do mes apagado ainda marcada como ativa).
+        $guiasDepois = [UiTest]::TabCount($guiaHwnd)
+        Check 'guia do mes excluido some da tela' (
+            $guiasDepois -eq ($guiasMes.Count - 1)) (
+            'antes=' + $guiasMes.Count + ' depois=' + $guiasDepois)
+        $selDepois = [UiTest]::TabSel($guiaHwnd)
+        Check 'guia ativa passa a ser outro mes' (
+            ($selDepois -ge 0) -and ($selDepois -lt $guiasDepois) -and
+            (($selDepois -ge $guiasMes.Count) -or
+             ($guiasMes[$selDepois] -ne $mesAlvo))) (
+            'sel=' + $selDepois + ' mes=' + $mesAlvo)
+
+        $pMes.Refresh()
+        Check 'aplicacao viva apos excluir o mes' (-not $pMes.HasExited)
+    }
+    catch {
+        Check 'passo [12] sem excecao' $false ($_.Exception.Message)
+    }
+    finally {
+        if ($pMes -ne $null) {
+            try { $pMes.Kill(); $pMes.WaitForExit() } catch { }
+        }
+    }
+
+    # ------------------------------------------------ [13] estado final + WER
+    Write-Banner '[13/13] Estado final e log de crashes do Windows'
     if (-not (Test-Path $db)) {
         $null = Invoke-App $RunSeconds   # recria o banco para deixar o ambiente utilizavel
     }

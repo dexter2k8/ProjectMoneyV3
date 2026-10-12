@@ -69,6 +69,18 @@ function ImportarCsv(AConn: TSQLite3Connection; AAccountId: Integer;
 function ExportarCsv(AConn: TSQLite3Connection; AAccountId: Integer;
   const AFileName: string): Integer;
 
+// Apaga um mes INTEIRO (ano + mes, as duas coisas que definem a guia da tela
+// de extratos) das duas tabelas, para TODAS as contas: as linhas de
+// "extratos" com dtposted nesse ano/mes e o registro de "saldos" cujo
+// enddate e' o MESMO fim de periodo. As guias de mes nascem dos meses com
+// saldo no ano do filtro, entao sem o registro de "saldos" a guia do mes
+// some - e' por isso que as duas exclusoes sao da MESMA transacao: apagar so'
+// os extratos deixaria a guia la' sustentando um saldo de mes sem transacao.
+// Devolve quantas linhas de "extratos" sairam (0 = o mes nao tinha transacao
+// gravada, mas o registro de "saldos" pode ter saido mesmo assim).
+// Erro de banco propaga: o dialogo e' do chamador.
+function ExcluirMes(AConn: TSQLite3Connection; AAno, AMes: Integer): Integer;
+
 implementation
 
 uses
@@ -778,6 +790,66 @@ begin
   finally
     consulta.Free;
     linhas.Free;
+  end;
+end;
+
+function ExcluirMes(AConn: TSQLite3Connection; AAno, AMes: Integer): Integer;
+var
+  trans: TSQLTransaction;
+  consulta: TSQLQuery;
+  ano, mes: string;
+  condicao: string;
+begin
+  Result := 0;
+  // Mes fora da faixa nao e' mes para ninguem - e o chamador nem teria guia
+  // para apagar (MesDaAba so' devolve 1..12 nas guias JAN..DEZ).
+  if (AAno < 0) or (AMes < 1) or (AMes > 12) then
+    Exit;
+
+  trans := AConn.Transaction;
+  if trans = nil then
+    raise Exception.Create('A conexao nao tem transacao para excluir o mes.');
+
+  // Os MESMOS predicados com que a interface ESCOLHE o mes, para o que some
+  // daqui bater com o que a grade mostrava. enddate de "saldos" e' sempre ISO
+  // (AAAA-MM-DD), entao o mes e' posicao fixa. dtposted tem DOIS formatos no
+  // mesmo campo (ISO "AAAA-MM-DD" e OFX "AAAAMMDD") e o '-' na posicao 5 e'
+  // o que separa os casos - e' o mesmo CASE do filtro da grade, sem o qual um
+  // lancamento OFX do mes ficaria la' depois que a guia some.
+  ano := QuotedStr(IntToStr(AAno));
+  mes := QuotedStr(Format('%.2d', [AMes]));
+  condicao := 'substr(dtposted, 1, 4) = ' + ano +
+    ' AND (CASE WHEN substr(dtposted, 5, 1) = ''-'' THEN substr(dtposted, 6, 2)' +
+    ' ELSE substr(dtposted, 5, 2) END) = ' + mes;
+
+  consulta := TSQLQuery.Create(nil);
+  try
+    consulta.Database := AConn;
+    consulta.Transaction := trans;
+    // Contagem ANTES de apagar: e' o numero que o chamador diz ao usuario, e
+    // tambem o unico jeito de saber se havia transacao no mes.
+    consulta.SQL.Text := 'SELECT COUNT(*) FROM extratos WHERE ' + condicao + ';';
+    consulta.Open;
+    Result := consulta.Fields[0].AsInteger;
+    consulta.Close;
+
+    // As duas tabelas na mesma transacao, ou apaga tudo ou nao apaga nada -
+    // mesmo caminho de limpeza do ImportarCsv, que tambem mexe nas duas.
+    try
+      AConn.ExecuteDirect('DELETE FROM extratos WHERE ' + condicao + ';', trans);
+      AConn.ExecuteDirect('DELETE FROM saldos WHERE substr(enddate, 1, 4) = ' +
+        ano + ' AND substr(enddate, 6, 2) = ' + mes + ';', trans);
+      // O Commit fecha o que a interface tem aberto nessa transacao, por isso
+      // o chamador recarrega combos, guias e grades depois daqui.
+      if trans.Active then
+        trans.Commit;
+    except
+      if trans.Active then
+        trans.Rollback;
+      raise;
+    end;
+  finally
+    consulta.Free;
   end;
 end;
 
