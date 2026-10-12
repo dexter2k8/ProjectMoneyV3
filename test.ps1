@@ -106,6 +106,7 @@ public class UiTest {
     [DllImport("user32.dll")] static extern IntPtr GetParent(IntPtr h);
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
     [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
+    [DllImport("user32.dll")] static extern bool IsWindowEnabled(IntPtr h);
     [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
     [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr h, uint cmd);
     [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr h, int i);
@@ -132,6 +133,28 @@ public class UiTest {
         const int WS_VSCROLL = 0x00200000;
         int s = GetWindowLong(h, -16); // GWL_STYLE
         return (s & WS_VSCROLL) == WS_VSCROLL;
+    }
+    // Habilitada? Um dialogo MODAL fica DESABILITADO enquanto a janela chamada
+    // por ele existe - e' o caso do dialogo de arquivo com uma caixa de erro
+    // nativa (arquivo inexistente) aberta por cima.
+    public static bool Enabled(IntPtr h) { return IsWindowEnabled(h); }
+    // Pid do dono de uma janela: serve para achar os OUTROS dialogos do app.
+    public static uint PidOf(IntPtr h) { uint p; GetWindowThreadProcessId(h, out p); return p; }
+    // Primeiro #32770 HABILITADO do processo, diferente do informado. Quando o
+    // dialogo de arquivo esta' desabilitado, a unica janela de dialogo ativa e'
+    // justamente a que o esta' segurando.
+    public static IntPtr EnabledDialog(uint procId, IntPtr except) {
+        IntPtr found = IntPtr.Zero;
+        EnumWindows((h, l) => {
+            uint p; GetWindowThreadProcessId(h, out p);
+            if (p != procId) return true;
+            if (h == except) return true;
+            if (!IsWindowVisible(h) || !IsWindowEnabled(h)) return true;
+            var c = new StringBuilder(64); GetClassName(h, c, 64);
+            if (c.ToString() == "#32770") { found = h; return false; }
+            return true;
+        }, IntPtr.Zero);
+        return found;
     }
     // Primeiro dialogo (#32770) que pertence ao processo indicado.
     public static IntPtr FindDialog(uint procId) {
@@ -725,6 +748,30 @@ function Invoke-MenuFileDialog($Process, [string]$MenuText) {
     [IntPtr]::Zero
 }
 
+# Dispensa a CAIXA DE ERRO NATIVA do proprio dialogo de arquivo (arquivo
+# inexistente - um nome morto vindo do historico de arquivos do Windows e'
+# o caso classico): e' um segundo #32770 MODAL do primeiro. Enquanto ela
+# existe o dialogo de arquivo fica DESABILITADO, nenhum OK adianta e o teste
+# parece congelado ate' o usuario fechar o aplicativo na mao. O sinal e' o
+# proprio dialogo desabilitado; a caixa e' o unico #32770 habilitado que
+# sobra no processo. Devolve True quando havia uma caixa e ela foi dispensada.
+function Dismiss-FileDialogError([IntPtr]$Dlg) {
+    if ([UiTest]::Enabled($Dlg)) { return $false }   # nada bloqueando por cima
+    $caixa = [UiTest]::EnabledDialog([UiTest]::PidOf($Dlg), $Dlg)
+    if ($caixa -eq [IntPtr]::Zero) { return $false }
+    $botao = [UiTest]::FindOkButton($caixa)
+    if ($botao -ne [IntPtr]::Zero) {
+        [void][UiTest]::PostMessage($botao, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)  # BM_CLICK
+    }
+    else {
+        [void][UiTest]::PostMessage($caixa, 0x0111, [IntPtr]1, [IntPtr]::Zero)       # WM_COMMAND/IDOK
+    }
+    for ($w = 0; ($w -lt 8) -and [UiTest]::IsWindow($caixa); $w++) {
+        Start-Sleep -Milliseconds 250
+    }
+    $true
+}
+
 # Grava o caminho no campo de nome e confirma (botao OK / IDOK).
 # O dialogo comum do Windows ainda pode estar montando os controles quando a
 # janela aparece (e' o instante em que FindDialog ja' a enxerga): nesse momento
@@ -733,11 +780,16 @@ function Invoke-MenuFileDialog($Process, [string]$MenuText) {
 # errado e o OK nao faz nada, deixando o dialogo aberto pra sempre. O
 # FECHAMENTO e' a unica prova de que o campo era o certo, entao o clique e'
 # refeito num loop curto, re-achando o campo a cada volta (com a janela ja'
-# montada o Edit visivel e' o certo). Devolve o campo usado (Zero quando o
-# dialogo nao tem campo de nome).
+# montada o Edit visivel e' o certo). Um clique que confirma um nome que nao
+# existe abre a caixa de erro nativa e trava o dialogo; por isso cada volta
+# dispensa essa caixa antes de tentar de novo. Devolve o campo usado (Zero
+# quando o dialogo nao tem campo de nome).
 function Set-FileDialogName([IntPtr]$Dlg, [string]$Path) {
     $edit = [IntPtr]::Zero
     for ($t = 0; ($t -lt 4) -and [UiTest]::IsWindow($Dlg); $t++) {
+        # Sem isto a nova tentativa seria feita num dialogo desabilitado, e as
+        # mensagens de OK cairiam no vazio ate' estourar o loop.
+        [void](Dismiss-FileDialogError $Dlg)
         $edit = [UiTest]::FindFileNameEdit($Dlg)
         if ($edit -ne [IntPtr]::Zero) {
             [void][UiTest]::SetText($edit, $Path)
