@@ -563,6 +563,7 @@ object FormMoney: TFormMoney
       Caption = 'Ajuda'
       object miAbout: TMenuItem
         Caption = 'Sobre'
+        OnClick = miAboutClick
       end
     end
   end

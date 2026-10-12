@@ -39,7 +39,10 @@
         Controls", pede confirmacao e apaga o MES DA GUIA ATIVA: as linhas de
         "extratos" (todas as contas) e o registro de "saldos" do mesmo fim de
         periodo, que e' o que faz a guia do mes sumir da tela
-    [13] Nenhum crash registrado no log de eventos do Windows (WER)
+    [13] Sobre (miAbout) -> dialogo informativo so com o botao OK, que abre
+        mesmo sem database (o menu de Ajuda e o unico controle que fica
+        sempre disponivel)
+    [14] Nenhum crash registrado no log de eventos do Windows (WER)
 
   Sai com código 0 quando tudo passa, 1 quando há alguma falha.
   As mensagens "arquivo(linha,col) severidade: mensagem" alimentam o
@@ -1140,7 +1143,7 @@ if ($dbExisted) {
 
 try {
     # ------------------------------------------------ [1] compilação/lint
-    Write-Banner '[1/13] Compilacao e lint (lazbuild -B)'
+    Write-Banner '[1/14] Compilacao e lint (lazbuild -B)'
     if ($SkipLint) {
         Write-Output '   (pulado por -SkipLint)'
     }
@@ -1714,7 +1717,7 @@ try {
         'gridTransPrepareCanvas nao colore a coluna saldo')
 
     # ------------------------------------------------ [2] cria o banco
-    Write-Banner '[2/13] Sem banks.db -> deve criar o arquivo'
+    Write-Banner '[2/14] Sem banks.db -> deve criar o arquivo'
     if (Test-Path $db) { Remove-Item $db -Force }
     $r = Invoke-App $RunSeconds
     Test-NoCrash $r 'aplicacao permanece viva (sem crash)'
@@ -1728,7 +1731,7 @@ try {
     }
 
     # ------------------------------------------------ [3] já existe
-    Write-Banner '[3/13] Com banks.db -> nao deve recriar nem alterar'
+    Write-Banner '[3/14] Com banks.db -> nao deve recriar nem alterar'
     if (Test-Path $db) {
         $hashBefore = Get-Hash $db
         $r = Invoke-App $RunSeconds
@@ -1740,7 +1743,7 @@ try {
     }
 
     # ------------------------------------------------ [4] DLL ausente
-    Write-Banner '[4/13] Sem sqlite3.dll -> erro deve ser tratado'
+    Write-Banner '[4/14] Sem sqlite3.dll -> erro deve ser tratado'
     if ($SkipDllTest) {
         Write-Output '   (pulado por -SkipDllTest)'
     }
@@ -1769,7 +1772,7 @@ try {
     }
 
     # ------------------------------------------------ [5] miNew -> database
-    Write-Banner '[5/13] Novo Database (miNew) -> cria .db com as 3 tabelas'
+    Write-Banner '[5/14] Novo Database (miNew) -> cria .db com as 3 tabelas'
     if (Test-Path $minewDb) { Remove-Item $minewDb -Force -ErrorAction SilentlyContinue }
     $pNovo = $null
     # Qualquer excecao no fluxo tem de virar FALHA: se escapasse em silencio,
@@ -1897,7 +1900,7 @@ try {
     }
 
     # ------------------------------------------------ [6] miOpen -> abrir .db
-    Write-Banner '[6/13] Abrir Database (miOpen) -> abre o valido e rejeita o invalido'
+    Write-Banner '[6/14] Abrir Database (miOpen) -> abre o valido e rejeita o invalido'
     $pAbrir  = $null
     $hashAbr = $null
     # O passo [4] apaga banks.db e ele so' e recriado no passo final: garante o
@@ -2050,7 +2053,7 @@ try {
     }
 
     # ------------------------------------------------ [7] miClose -> fechar
-    Write-Banner '[7/13] Fechar Database (miClose) encerra a conexao; Sair (miExit) encerra o app'
+    Write-Banner '[7/14] Fechar Database (miClose) encerra a conexao; Sair (miExit) encerra o app'
     $pFecha = $null
     # Mesma protecao dos passos de interface: excecao tem de virar FALHA.
     $ErrorActionPreference = 'Stop'
@@ -2223,7 +2226,7 @@ try {
     }
 
     # ---------------- [8] miList/miGerCon/miGerSal -> tbBancos/tbContas/tbSaldos
-    Write-Banner '[8/13] Voltar sem database -> estado vazio; com database -> fica'
+    Write-Banner '[8/14] Voltar sem database -> estado vazio; com database -> fica'
     $pNav = $null
     # Mesma protecao do passo do miNew: excecao tem de virar FALHA.
     $ErrorActionPreference = 'Stop'
@@ -2684,7 +2687,7 @@ try {
     }
 
     # ------------------------------------ [9] importar OFC/OFX (miImport)
-    Write-Banner '[9/13] Importar OFC/OFX -> linhas novas entram em "extratos"'
+    Write-Banner '[9/14] Importar OFC/OFX -> linhas novas entram em "extratos"'
     $pImp  = $null
     $antes = 0
     # Mesma protecao dos demais passos: excecao tem de virar FALHA.
@@ -3149,7 +3152,7 @@ try {
     }
 
     # ---------------------------- [10] cbAccount acompanha a tbContas no Voltar
-    Write-Banner '[10/13] "Voltar" da tbContas remonta cbAccount'
+    Write-Banner '[10/14] "Voltar" da tbContas remonta cbAccount'
     $pCb = $null
     # Mesma protecao dos demais passos: excecao tem de virar FALHA.
     $ErrorActionPreference = 'Stop'
@@ -3671,7 +3674,7 @@ try {
     }
 
     # ---------------------------- [11] importar transacoes (miImpTrans)
-    Write-Banner '[11/13] Importar Transacoes (CSV) -> substitui extratos e saldos'
+    Write-Banner '[11/14] Importar Transacoes (CSV) -> substitui extratos e saldos'
     $pCsv = $null
     # Mesma protecao dos demais passos: excecao tem de virar FALHA.
     $ErrorActionPreference = 'Stop'
@@ -4172,7 +4175,7 @@ try {
     }
 
     # ---------------------------- [12] excluir mes (btnMonthClear)
-    Write-Banner '[12/13] Excluir Mes (btnMonthClear) -> apaga o mes e some a guia'
+    Write-Banner '[12/14] Excluir Mes (btnMonthClear) -> apaga o mes e some a guia'
     $pMes = $null
     # Mesma protecao dos demais passos: excecao tem de virar FALHA.
     $ErrorActionPreference = 'Stop'
@@ -4525,8 +4528,90 @@ try {
         }
     }
 
-    # ------------------------------------------------ [13] estado final + WER
-    Write-Banner '[13/13] Estado final e log de crashes do Windows'
+    # ---------------------------- [13] sobre (miAbout)
+    Write-Banner '[13/14] Sobre (miAbout) -> dialogo informativo so com OK'
+    $pSobre = $null
+    # Mesma protecao dos demais passos: excecao tem de virar FALHA.
+    $ErrorActionPreference = 'Stop'
+    try {
+        # Provas de C'ODIGO, juntas das de comportamento: o handler existe, o
+        # .lfm o liga ao item e o dialogo e' o de INFORMACAO com um so' botao.
+        # O ponto e' esse - um "Sobre" pede aceitacao, nao escolha: mbYes/mbNo
+        # ou mbCancel aqui seriam um botao a mais sem nada a decidir.
+        $blocoSobre = ''
+        if ($pasTexto -match '(?s)procedure TFormMoney\.miAboutClick.*?\nend;') {
+            $blocoSobre = $Matches[0]
+        }
+        Check 'miAboutClick existe e pede apenas o mbOK (.pas)' (
+            ($blocoSobre -ne '') -and
+            ($blocoSobre -match 'mtInformation') -and
+            ($blocoSobre -match '\[mbOK\]') -and
+            (-not ($blocoSobre -match 'mbYes|mbNo|mbCancel|mbAbort'))) (
+            'miAboutClick sem mtInformation/mbOK ou com outro botao')
+        # O texto vem do .pas (nao do .lfm), entao o que se garante aqui e' a
+        # IDENTIDADE do dialogo: o email e o assunto sao o que o usuario vai
+        # usar para responder - e os dois sao ASCII, entao casam direto.
+        Check 'miAboutClick lembra o email e o assunto do projeto (.pas)' (
+            ($blocoSobre -match 'neimestre@yahoo\.com\.br') -and
+            ($blocoSobre -match 'projectMoney') -and
+            ($blocoSobre -match 'ofc/ofx') -and
+            ($blocoSobre -match 'excel csv')) (
+            'miAboutClick sem email, assunto, ofc/ofx ou excel csv')
+        $blocoMenuSobre = Get-LfmBlock $lfmTexto 'miAbout: TMenuItem'
+        Check 'miAbout ligado ao handler no .lfm' (
+            ($blocoMenuSobre -ne '') -and
+            $blocoMenuSobre.Contains('OnClick = miAboutClick')) (
+            'miAbout sem OnClick no .lfm')
+
+        # Abre SEM database de proposito: o menu de Ajuda e' o unico controle
+        # que AtualizarEstadoDatabase nao desativa (ele so' mexe em miClose e
+        # mmTransactions), entao o "Sobre" e' o caminho mais curto para provar
+        # que nao depende de arquivo nenhum.
+        $pSobre = Start-Process -FilePath $exe -WorkingDirectory $root -PassThru
+        Start-Sleep -Seconds 3
+        $pSobre.Refresh()
+        $mainSobre = $pSobre.MainWindowHandle
+        Check 'aplicacao abriu para o passo [13]' ($mainSobre -ne [IntPtr]::Zero)
+
+        $idSobre = [UiTest]::MenuId($mainSobre, 'Sobre')
+        Check 'item de menu "Sobre" encontrado' ($idSobre -gt 0) ('id=' + $idSobre)
+        [void][UiTest]::PostMessage($mainSobre, 0x0111, [IntPtr]$idSobre,
+            [IntPtr]::Zero)                                               # WM_COMMAND
+        $dlgSobre = [IntPtr]::Zero
+        for ($t = 0; ($t -lt 20) -and ($dlgSobre -eq [IntPtr]::Zero); $t++) {
+            Start-Sleep -Milliseconds 250
+            $dlgSobre = [UiTest]::FindDialog([uint32]$pSobre.Id)
+        }
+        Check '"Sobre" abre o dialogo' ($dlgSobre -ne [IntPtr]::Zero) (
+            'hwnd=' + $dlgSobre)
+        if ($dlgSobre -ne [IntPtr]::Zero) {
+            # Mesma leitura de botoes do passo [12], mas ao contrario: o
+            # SEGUNDO devolvido tem de ser Zero. E' a prova de "apenas o
+            # botao OK" - se aparecesse um segundo, seria uma escolha que o
+            # texto nao faz.
+            $botoesSobre = [UiTest]::ConfirmButtons($dlgSobre)
+            Check '"Sobre" mostra UM so botao (o OK)' (
+                ($botoesSobre[0] -ne [IntPtr]::Zero) -and
+                ($botoesSobre[1] -eq [IntPtr]::Zero)) (
+                'primeiro=' + $botoesSobre[0] + ' segundo=' + $botoesSobre[1])
+            [void][UiTest]::PostMessage($botoesSobre[0], 0x00F5, [IntPtr]::Zero,
+                [IntPtr]::Zero)                                            # BM_CLICK
+            Check 'o unico botao fecha o dialogo' (Wait-DialogClosed $dlgSobre)
+        }
+        $pSobre.Refresh()
+        Check 'aplicacao viva apos o "Sobre"' (-not $pSobre.HasExited)
+    }
+    catch {
+        Check 'passo [13] sem excecao' $false ($_.Exception.Message)
+    }
+    finally {
+        if ($pSobre -ne $null) {
+            try { $pSobre.Kill(); $pSobre.WaitForExit() } catch { }
+        }
+    }
+
+    # ------------------------------------------------ [14] estado final + WER
+    Write-Banner '[14/14] Estado final e log de crashes do Windows'
     if (-not (Test-Path $db)) {
         $null = Invoke-App $RunSeconds   # recria o banco para deixar o ambiente utilizavel
     }

@@ -143,6 +143,11 @@ type
     // antes do desenho padrão da célula, que é quem pinta o texto.
     procedure gridTransPrepareCanvas(Sender: TObject; DataCol: Integer;
       Column: TColumn; AState: TGridDrawState);
+    // "Ajuda > Sobre": só informativo - um dialogo com a mensagem do
+    // programa e um UNICO botão (mbOK). Não mexe em database nem em estado
+    // de tela, então funciona com a interface aberta ou não (o menu é o
+    // controle que sempre fica acessível).
+    procedure miAboutClick(Sender: TObject);
     procedure miCloseClick(Sender: TObject);
     // "Sair": fecha o database (o mesmo fechar do miClose) e encerra a
     // aplicação. É o fim do programa, não uma navegação - o estado da tela
@@ -1598,6 +1603,21 @@ begin
   // Sem ano escolhido não há guia de mês para mostrar (a chamada explícita
   // cobre o caso do OnChange não disparar na limpeza).
   AtualizarAbasMes;
+end;
+
+procedure TFormMoney.miAboutClick(Sender: TObject);
+begin
+  // O dialogo e' o de INFORMACAO com so' o mbOK: sem escolha para o usuario,
+  // entao nao ha' botao de cancelar nem desfazer - e nada muda de estado, o
+  // "Sobre" e' uma placa de identificacao do programa.
+  MessageDlg(
+    'Este programa tem como objetivo gerenciar extratos bancários. ' +
+    'Os dados podem ser inseridos manualmente ou obtidos de arquivo ' +
+    'ofc/ofx. Também é possível importar ou exportar o database em ' +
+    'formato excel csv. Dúvidas ou sugestões, envie email para ' +
+    'neimestre@yahoo.com.br com o assunto projectMoney.' + LineEnding +
+    'Copyright © 2019 - 2021 - 2026 - @neimestre',
+    mtInformation, [mbOK], 0);
 end;
 
 procedure TFormMoney.miCloseClick(Sender: TObject);
