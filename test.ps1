@@ -14,7 +14,10 @@
     [4] Sem sqlite3.dll -> erro tratado com diálogo (sem crash, sem arquivo parcial)
     [5] Novo Database (miNew) -> cria um .db com as tabelas contas/extratos/saldos e revela a interface
     [6] Abrir Database (miOpen) -> abre o .db valido, rejeita arquivo invalido e revela a interface
-    [7] Fechar Database (miClose) -> encerra a conexao com o arquivo e oculta a interface
+    [7] Fechar Database (miClose) -> encerra a conexao com o arquivo e oculta a
+        interface; Sair (miExit) -> faz o mesmo fechar e encerra a aplicacao
+        (o Terminate nao passa pelos eventos de fechamento do form, entao o
+        fechar tem de vir antes de morrer)
     [8] Voltar SEM database -> devolve o estado vazio (so o menu); COM
         database aberto -> a interface fica (tbContas e tbSaldos ligadas as
         tabelas); "Fechar Database" volta a esconder
@@ -2013,7 +2016,7 @@ try {
     }
 
     # ------------------------------------------------ [7] miClose -> fechar
-    Write-Banner '[7/12] Fechar Database (miClose) -> encerra a conexao com o arquivo'
+    Write-Banner '[7/12] Fechar Database (miClose) encerra a conexao; Sair (miExit) encerra o app'
     $pFecha = $null
     # Mesma protecao dos passos de interface: excecao tem de virar FALHA.
     $ErrorActionPreference = 'Stop'
@@ -2037,6 +2040,25 @@ try {
         $mmFecha = [UiTest]::MenuTopState($mainFecha, 'Importar OFC/OFX')
         Check 'menu Transacoes desabilitado na inicializacao' ($mmFecha -eq 0) (
             'estado=' + $mmFecha)
+
+        # O "Sair" e' o fechar do miClose seguido do fim do processo. A ordem
+        # das duas chamadas e' o contrato: o Terminate NAO passa pelos eventos
+        # de fechamento do form, entao sem o fechar antes a aplicacao morreria
+        # com a conexao ainda ligada ao arquivo.
+        $blocoExit = ''
+        if ($pasTexto -match '(?s)procedure TFormMoney\.miExitClick.*?\nend;') {
+            $blocoExit = $Matches[0]
+        }
+        Check 'miExitClick fecha o database e termina (.pas)' (
+            ($blocoExit -match 'miCloseClick') -and
+            ($blocoExit -match 'Application\.Terminate') -and
+            ($blocoExit.IndexOf('miCloseClick') -lt
+             $blocoExit.IndexOf('Application.Terminate'))) (
+            'miExitClick sem o fechar antes do Terminate')
+        $blocoMenuExit = Get-LfmBlock $lfmTexto 'miExit: TMenuItem'
+        Check 'miExit ligado ao miExitClick (.lfm)' (
+            $blocoMenuExit.Contains('OnClick = miExitClick')) (
+            'miExit sem OnClick no .lfm')
 
         # (a) abre o database de contas: sem conexao nao ha nada para fechar
         $dlgF = Invoke-MenuFileDialog $pFecha 'Abrir Database'
@@ -2120,6 +2142,38 @@ try {
             }
             $pFecha.Refresh()
             Check 'aplicacao permanece viva ao reconectar' (-not $pFecha.HasExited)
+
+            # (d) "Sair" com database ABERTO: o comando tem de encerrar a
+            # aplicacao - e' o unico objetivo observavel do miExit. O arquivo
+            # ficar legivel depois nao prova o fechar (o Windows solta o
+            # handle quando o processo morre de qualquer jeito): o que prova a
+            # ordem fechar-antes-de-morrer e' o check de codigo la' em cima, e
+            # aqui ficam as duas consequencias que importam - o processo some
+            # sozinho e o database continua integro.
+            Check 'arquivo travado antes do Sair (conexao aberta)' (
+                -not (Test-FileReadable $minewDb))
+            $idSair = [UiTest]::MenuId($mainFecha, 'Sair')
+            Check 'item de menu "Sair" encontrado' ($idSair -gt 0) ('id=' + $idSair)
+            if ($idSair -gt 0) {
+                [void][UiTest]::Msg($mainFecha, 0x0111, [IntPtr]$idSair,
+                    [IntPtr]::Zero)
+                # O Terminate so' derruba o processo no proximo ciclo de
+                # mensagens; a folga cobre tambem o Windows soltando a janela.
+                $saiuApp = $false
+                for ($tS = 0; ($tS -lt 20) -and (-not $saiuApp); $tS++) {
+                    Start-Sleep -Milliseconds 250
+                    $pFecha.Refresh()
+                    $saiuApp = $pFecha.HasExited
+                }
+                Check 'aplicacao encerrou ao Sair' $saiuApp ('pid=' + $pFecha.Id)
+                Check 'nenhum dialogo pendente ao Sair' (
+                    [UiTest]::FindDialog([uint32]$pFecha.Id) -eq [IntPtr]::Zero)
+                # Consulta direta no arquivo: o database nao foi corrompido
+                # pelo fechar + sair (sem commit pendente sobrando solto).
+                Check 'database legivel e integro apos o Sair' (
+                    [Sq]::Consultar($minewDb,
+                        'SELECT COUNT(*) FROM contas;') -ge 0)
+            }
         }
 
         try { $pFecha.Kill(); $pFecha.WaitForExit() } catch { }

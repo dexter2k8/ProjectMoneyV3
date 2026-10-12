@@ -518,6 +518,7 @@ object FormMoney: TFormMoney
       end
       object miExit: TMenuItem
         Caption = 'Sair'
+        OnClick = miExitClick
       end
     end
     object mmTransactions: TMenuItem

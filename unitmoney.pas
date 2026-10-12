@@ -138,6 +138,10 @@ type
     procedure gridTransPrepareCanvas(Sender: TObject; DataCol: Integer;
       Column: TColumn; AState: TGridDrawState);
     procedure miCloseClick(Sender: TObject);
+    // "Sair": fecha o database (o mesmo fechar do miClose) e encerra a
+    // aplicação. É o fim do programa, não uma navegação - o estado da tela
+    // depois dele não interessa mais.
+    procedure miExitClick(Sender: TObject);
     procedure miGerConClick(Sender: TObject);
     procedure miGerSalClick(Sender: TObject);
     // "Exportar Transacoes (CSV)": le o extrato inteiro da conta escolhida no
@@ -1580,6 +1584,18 @@ begin
   // Fechou: a página é ocultada e o "Fechar Database" volta a ser desativado
   // (se o fechar falhou, a query continua ligada e nada muda).
   AtualizarEstadoDatabase;
+end;
+
+procedure TFormMoney.miExitClick(Sender: TObject);
+begin
+  // "Sair" é o "Fechar Database" seguido do fim da aplicação: o miClose faz
+  // o fechar das três queries e da conexão - com o aviso de falha dele e com
+  // o recálculo do estado da tela, que aqui não atrapalha (a janela some em
+  // seguida). O Terminate é quem derruba o processo, e ele NÃO passa pelos
+  // eventos de fechamento do form: sem o fechar antes, a aplicação sairia
+  // com a conexão ainda ligada ao arquivo.
+  miCloseClick(nil);
+  Application.Terminate;
 end;
 
 procedure TFormMoney.miGerConClick(Sender: TObject);
