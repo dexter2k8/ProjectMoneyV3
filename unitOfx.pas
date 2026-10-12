@@ -81,6 +81,15 @@ function LerOfx(const AFileName: string; out AIgnorados: Integer): TRegistrosOfx
 // dialogo do erro e' do chamador.
 function LerCsv(const AFileName: string; out AIgnorados: Integer): TRegistrosOfx;
 
+// O campo de um CSV na forma em que SepararCamposCsv o le' de volta: as aspas
+// envolvem quando o texto tem ';' (ou '"', ou uma ponta com espaco, que o Trim
+// do leitor tiraria) e os '"' internos sao duplicados - e' o inverso exato do
+// que o leitor faz ao cortar a linha. CR/LF viram espaco ANTES de tudo, ja' que
+// o leitor divide as linhas antes de separar os campos e texto com quebra de
+// linha nao teria como voltar inteiro.
+// E' o meio de gravar um arquivo que o proprio LerCsv rele' sem perder nada.
+function EscaparCampoCsv(const ATexto: string): string;
+
 implementation
 
 uses
@@ -477,6 +486,35 @@ begin
   end;
   SetLength(Result, total + 1);
   Result[total] := CampoTexto(Length(ALinha));
+end;
+
+// Escapa UM campo para SepararCamposCsv - veja o contrato na interface.
+function EscaparCampoCsv(const ATexto: string): string;
+var
+  texto: string;
+  precisaAspas: Boolean;
+begin
+  // A quebra de linha nao tem como sobreviver ao corte do leitor: vira
+  // espaco, que e' o que a propria coluna de um banco normalmente guarda.
+  texto := StringReplace(ATexto, #13, ' ', [rfReplaceAll]);
+  texto := StringReplace(texto, #10, ' ', [rfReplaceAll]);
+
+  // Precisa de aspas o campo que o corte da linha mudaria: o ';' viraria
+  // outro campo, o Trim tiraria o espaco da ponta e o '"' das bordas seria
+  // confundido com o envoltorio (CampoTexto so' desenvolve o campo que
+  // COMECA e TERMINA com aspas).
+  precisaAspas := (Pos(';', texto) > 0) or (Pos('"', texto) > 0) or
+    ((texto <> '') and ((texto[1] = ' ') or
+    (texto[Length(texto)] = ' ')));
+  if not precisaAspas then
+  begin
+    Result := texto;
+    Exit;
+  end;
+
+  // Por dentro, cada aspas vira duas - o inverso do '""' que CampoTexto
+  // devolve unico ao desenvolver o envoltorio.
+  Result := '"' + StringReplace(texto, '"', '""', [rfReplaceAll]) + '"';
 end;
 
 // Uma data do CSV nos DOIS formatos que a tabela aceita - AAAA-MM-DD (o do

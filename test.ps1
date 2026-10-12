@@ -27,7 +27,11 @@
         excluida pela propria tela de gestao enquanto o app estava aberto
     [11] Importar Transacoes (CSV) (miImpTrans) -> limpa "extratos" e
         "saldos" e o arquivo CSV vira o conteudo novo, com o saldo de CADA
-        MES do arquivo gravado pelas MESMAS regras do miImport
+        MES do arquivo gravado pelas MESMAS regras do miImport; e o
+        Exportar Transacoes (CSV) (miExpTrans) leva o extrato da conta
+        escolhida para um arquivo no MESMO formato, que sai igual ao banco
+        (cabecalho do modelo sem a ID do banco, data em AAAA-MM-DD, valor
+        com ponto e o memo com aspas devolvido inteiro na reentrada)
     [12] Nenhum crash registrado no log de eventos do Windows (WER)
 
   Sai com código 0 quando tudo passa, 1 quando há alguma falha.
@@ -52,6 +56,7 @@ $lixoDb  = Join-Path $root 'lixo-test.db'
 $ofxUtf8 = Join-Path $root 'importa-test.ofx'
 $ofxAnsi = Join-Path $root 'importa-test-ansi.ofx'
 $ofxOutraConta = Join-Path $root 'importa-test-conta.ofx'
+$exportaCsv = Join-Path $root 'exporta-test.csv'
 $passed = 0
 $failed = 0
 
@@ -785,6 +790,32 @@ function Invoke-ImportarCsv($Process, [string]$Arquivo, [string]$AMenuText) {
     Wait-Warning ([uint32]$Process.Id)
 }
 
+# Mesma sequencia de Invoke-ImportarCsv, para o dialogo de SALVAR do
+# miExpTrans: o fluxo de um dialogo comum de arquivo e' identico nos dois
+# lados (menu -> dialogo -> nome -> fechar -> aviso de resultado), entao os
+# mesmos helpers servem. Devolve o HWND do dialogo de resultado ou Zero.
+function Invoke-ExportarCsv($Process, [string]$Arquivo, [string]$AMenuText) {
+    if ($AMenuText -eq '') { return [IntPtr]::Zero }
+    $dlg = Invoke-MenuFileDialog $Process $AMenuText
+    if ($dlg -eq [IntPtr]::Zero) { return [IntPtr]::Zero }
+    $edit = Set-FileDialogName $dlg $Arquivo
+    if ($edit -eq [IntPtr]::Zero) { return [IntPtr]::Zero }
+    if (-not (Wait-DialogClosed $dlg)) { return [IntPtr]::Zero }
+    Wait-Warning ([uint32]$Process.Id)
+}
+
+# Desenvolve UM campo de um CSV gravado pelo exportador - o inverso do
+# EscaparCampoCsv de unitOfx (e do CampoTexto do leitor): o envoltorio some e
+# as aspas internas duplicadas voltam a ser uma so'. Campos sem aspas nas
+# duas pontas sao o texto cru, como o leitor tambem faz.
+function ConvertFrom-CsvField([string]$Texto) {
+    $t = $Texto.Trim()
+    if (($t.Length -ge 2) -and ($t[0] -eq '"') -and ($t[$t.Length - 1] -eq '"')) {
+        return $t.Substring(1, $t.Length - 2).Replace('""', '"')
+    }
+    return $t
+}
+
 # Acha um combo da tela de extratos pela LARGURA (cbAccount = 212, cbYear =
 # 100): os dois sao LCLComboBox e o id do controle muda a cada execucao, entao
 # a geometria e' o unico jeito estavel de separar um do outro. A tela tem de
@@ -1191,6 +1222,32 @@ try {
     $pasPath = Join-Path $root 'unitmoney.pas'
     if (Test-Path $pasPath) { $pasTexto = [IO.File]::ReadAllText($pasPath) }
     Check 'unitmoney.pas lido' ($pasTexto -ne '') $pasPath
+    # Regra geral por tras do erro "incapaz de localizar a classe do
+    # componente" que o F12 mostrava: o Lazarus so' resolve objeto de .lfm pela
+    # paleta, por designer base ou por GetClass do PROPRIO processo, e classe
+    # declarada num unit do projeto nao e' nenhuma das tres. O ancestral
+    # registrado (TDBGrid, TForm...) seria o fallback, mas o caminho de classe
+    # aninhada chama LoadComponentDependencyHidden com MustHaveLFM=true, que
+    # DESLIGA esse fallback - entao qualquer classe propria dentro do .lfm
+    # para o IDE. A unica excecao legitima e' a raiz, que e' a classe do form
+    # do proprio unit.
+    $classesProprias = @()
+    foreach ($mPropria in [regex]::Matches($pasTexto, '(?m)^\s*(\w+)\s*=\s*class\s*\(')) {
+        $classesProprias += $mPropria.Groups[1].Value
+    }
+    $raizLfm = ''
+    if ($lfmTexto -match '(?m)^object\s+\w+:\s*(\w+)') { $raizLfm = $Matches[1] }
+    $propriasNoLfm = @()
+    foreach ($mObjLfm in [regex]::Matches($lfmTexto, '(?m)^\s*object\s+\w+:\s*(\w+)')) {
+        if (($mObjLfm.Groups[1].Value -ne $raizLfm) -and
+            ($classesProprias -contains $mObjLfm.Groups[1].Value)) {
+            $propriasNoLfm += $mObjLfm.Groups[1].Value
+        }
+    }
+    Check 'nenhuma classe propria do projeto dentro do .lfm (quebra o F12 no IDE)' (
+        $propriasNoLfm.Count -eq 0) (
+        'classe(s) do unitmoney.pas usada(s) como componente no .lfm: ' +
+        ($propriasNoLfm -join ', '))
     # gridSaldos e' uma TDBGrid de BASE, sem descendente proprio. Um descendente
     # declarado neste unit nao da certo: o Lazarus so' resolve objeto de .lfm
     # pela paleta, por designer base ou por GetClass, e classe de projeto nao e'
@@ -3590,6 +3647,46 @@ try {
             $blocoDlg.Contains("Filter = 'Arquivos CSV")) (
             'dlgImpCsv ausente ou sem filtro de CSV no .lfm')
 
+        # O exportar e' o passo inverso do importar, entao ele tem de falar o
+        # MESMO formato: cabecalho com os nomes das colunas que LerCsv acha,
+        # data normalizada para AAAA-MM-DD, o CAST que recupera os centavos e
+        # o escapamento que faz o texto com aspas voltar inteiro na reentrada.
+        $blocoExpCsv = ''
+        $posExpCsv = $dbTexto.LastIndexOf('function ExportarCsv(')
+        if ($posExpCsv -ge 0) { $blocoExpCsv = $dbTexto.Substring($posExpCsv) }
+        Check 'ExportarCsv escreve o cabecalho e normaliza o que sai (.pas)' (
+            ($blocoExpCsv -match 'TRNTYPE;DTPOSTED;TRNAMT;CHKNUM;MEMO') -and
+            ($blocoExpCsv -notmatch 'ID;TRNTYPE;DTPOSTED') -and
+            ($blocoExpCsv -match 'DataIsoDtposted') -and
+            ($blocoExpCsv -match 'EscaparCampoCsv') -and
+            ($blocoExpCsv -match 'CAST\(trnamt AS REAL\)')) (
+            'ExportarCsv sem cabecalho/normalizacao/escapamento/CAST')
+        Check 'EscaparCampoCsv declarado em unitOfx.pas (passo [11])' (
+            $ofxTexto -match 'function EscaparCampoCsv\(') (
+            'unitOfx.pas sem o escapamento do CSV gravado')
+
+        # O handler tem de ESCOLHER a conta no filtro e GRAVAR pela
+        # ExportarCsv, com dialogo de salvar ligado a ele no .lfm.
+        $blocoExp = ''
+        if ($pasTexto -match
+            '(?s)procedure TFormMoney\.miExpTransClick.*?\nend;') {
+            $blocoExp = $Matches[0]
+        }
+        Check 'miExpTransClick exporta o extrato da conta escolhida (.pas)' (
+            ($blocoExp -match 'ExportarCsv') -and
+            ($blocoExp -match 'cbAccount') -and
+            ($blocoExp -match 'dlgExpCsv')) (
+            'miExpTransClick sem ExportarCsv/cbAccount/dlgExpCsv')
+        $blocoMenuExp = Get-LfmBlock $lfmTexto 'miExpTrans: TMenuItem'
+        $blocoDlgExp = Get-LfmBlock $lfmTexto 'dlgExpCsv: TSaveDialog'
+        Check 'miExpTrans ligado ao miExpTransClick (.lfm)' (
+            $blocoMenuExp.Contains('OnClick = miExpTransClick')) (
+            'miExpTrans sem OnClick no .lfm')
+        Check 'dlgExpCsv declarado com filtro de CSV (.lfm)' (
+            ($blocoDlgExp -ne '') -and
+            $blocoDlgExp.Contains("Filter = 'Arquivos CSV")) (
+            'dlgExpCsv ausente ou sem filtro de CSV no .lfm')
+
         $csvTrans = Join-Path $root 'backup\extrato.csv'
         Check 'fixture CSV de transacoes existe (passo [11])' (Test-Path $csvTrans)
 
@@ -3699,6 +3796,44 @@ try {
         Check 'cbYear lista os 2 anos do periodo do CSV (2026 e 2025)' (
             (Get-ComboCount $cbAnoCsv) -eq 2) (
             'itens=' + (Get-ComboCount $cbAnoCsv))
+
+        # Exportar o extrato que acabou de entrar: mesma conta, mesma tela.
+        # O arquivo e' conferido DEPOIS (com a aplicacao encerrada, na secao
+        # do arquivo) - aqui so' se prova que o fluxo nao travou e que ele
+        # foi gravado. O arquivo de uma execucao anterior e' removido antes:
+        # o dlgExpCsv tem ofOverwritePrompt, e a confirmacao de sobrescrita
+        # seria um #32770 a mais que enganaria o Wait-Warning.
+        if (Test-Path $exportaCsv) {
+            Remove-Item $exportaCsv -Force -ErrorAction SilentlyContinue
+        }
+        $capExpCsv = Get-LfmCaption $lfmTexto 'miExpTrans: TMenuItem'
+        Check 'Caption de miExpTrans lido do .lfm (passo [11])' ($capExpCsv -ne '')
+        $dlgExpRes = Invoke-ExportarCsv $pCsv $exportaCsv $capExpCsv
+        $janelaExp = [IntPtr]::Zero
+        if ($dlgExpRes -eq [IntPtr]::Zero) {
+            # Mesmo desempate do importar: sem o dialogo de resultado, alguma
+            # OUTRA janela explica - ela vira detalhe da falha e e' dispensada.
+            for ($tD = 0; ($tD -lt 8) -and ($janelaExp -eq [IntPtr]::Zero); $tD++) {
+                Start-Sleep -Milliseconds 250
+                $janelaExp = [UiTest]::FindDialog([uint32]$pCsv.Id)
+            }
+            if ($janelaExp -ne [IntPtr]::Zero) {
+                [void][UiTest]::PostMessage($janelaExp, 0x0010, [IntPtr]::Zero,
+                    [IntPtr]::Zero)
+                [void](Wait-DialogClosed $janelaExp)
+            }
+        }
+        Check 'dialogo de resultado da exportacao do CSV' (
+            $dlgExpRes -ne [IntPtr]::Zero) ('outra janela do app hwnd=' + $janelaExp)
+        if ($dlgExpRes -ne [IntPtr]::Zero) {
+            [void][UiTest]::PostMessage($dlgExpRes, 0x0010, [IntPtr]::Zero,
+                [IntPtr]::Zero)                                            # WM_CLOSE
+            Check 'resultado da exportacao do CSV dispensado' (
+                Wait-DialogClosed $dlgExpRes)
+        }
+        $pCsv.Refresh()
+        Check 'aplicacao viva apos exportar o CSV' (-not $pCsv.HasExited)
+        Check 'arquivo de exportacao gravado no disco' (Test-Path $exportaCsv)
     }
     catch {
         Check 'fluxo do miImpTrans sem excecao' $false $_.Exception.Message
@@ -3849,6 +3984,105 @@ try {
         " '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]';")
     Check 'nenhuma data do CSV virou lixo' ($lixoData -eq 0) ('qtd=' + $lixoData)
 
+    # O arquivo exportado no passo [11] e' o MESMO conteudo do banco, no
+    # formato que a importacao le' de volta: cabecalho do modelo, data em
+    # AAAA-MM-DD, valor com PONTO e as aspas dos memos escapadas. Aqui a
+    # aplicacao ja' encerrou, entao a leitura do arquivo nao disputa com nada.
+    Check 'arquivo exportado no passo [11] existe (conferencia)' (
+        Test-Path $exportaCsv)
+    if (Test-Path $exportaCsv) {
+        $linhasExp = @([IO.File]::ReadAllLines($exportaCsv))
+        $cabecalhoExp = ''
+        if ($linhasExp.Count -gt 0) { $cabecalhoExp = $linhasExp[0] }
+        # O BOM de UTF-8 na frente do arquivo some na leitura (o detector de
+        # encoding do proprio .NET o consome), entao a comparacao e' limpa. E'
+        # o cabecalho do modelo MENOS a ID: a chave interna e' do banco, e a
+        # importacao acha as colunas pelo nome - sem elas o arquivo vale igual.
+        Check 'arquivo exportado com o cabecalho do modelo (sem a ID)' (
+            $cabecalhoExp -eq 'TRNTYPE;DTPOSTED;TRNAMT;CHKNUM;MEMO') (
+            'cabecalho=' + $cabecalhoExp)
+        Check 'exportacao leva TODAS as linhas do banco' (
+            ($linhasExp.Count - 1) -eq $nExt) (
+            'arquivo=' + ($linhasExp.Count - 1) + ' banco=' + $nExt)
+
+        # As regras do formato que EhDataCsv/EhNumeroCsv do leitor cobram
+        # de cada linha: 5 campos, data em AAAA-MM-DD e valor com ponto e DUAS
+        # casas. A soma dos valores e' a mesma conta que o banco confirma
+        # (396.25) - valor arredondado erraria aqui.
+        $linhasDadosExp = @($linhasExp | Select-Object -Skip 1 |
+            Where-Object { $_.Trim() -ne '' })
+        $camposErradosExp = 0
+        $datasErradasExp = 0
+        $valoresErradosExp = 0
+        $somaExportada = 0.0
+        $memosComAspas = 0
+        $tiposErradosExp = 0
+        $docsErradosExp = 0
+        $porMesArquivo = @{}
+        foreach ($linhaExp in $linhasDadosExp) {
+            $cExp = $linhaExp.Split(';')
+            if ($cExp.Count -ne 5) { $camposErradosExp++; continue }
+            if ($cExp[1] -notmatch '^[0-9]{4}-[0-9]{2}-[0-9]{2}$') {
+                $datasErradasExp++
+            }
+            else {
+                $mesExp = $cExp[1].Substring(0, 7)
+                if ($porMesArquivo.ContainsKey($mesExp)) {
+                    $porMesArquivo[$mesExp] = $porMesArquivo[$mesExp] + 1
+                }
+                else { $porMesArquivo[$mesExp] = 1 }
+            }
+            if ($cExp[2] -notmatch '^-?[0-9]+\.[0-9]{2}$') {
+                $valoresErradosExp++
+            }
+            else {
+                $somaExportada = $somaExportada + [double]::Parse($cExp[2],
+                    [Globalization.CultureInfo]::InvariantCulture)
+            }
+            if ($cExp[0] -notmatch '^(CREDIT|PAYMENT)$') { $tiposErradosExp++ }
+            if ($cExp[3] -ne '077') { $docsErradosExp++ }
+            if ((ConvertFrom-CsvField $cExp[4]) -eq $memoCsv) {
+                $memosComAspas++
+            }
+        }
+        Check 'toda linha exportada tem os 5 campos do cabecalho' (
+            $camposErradosExp -eq 0) ('linhas erradas=' + $camposErradosExp)
+        Check 'toda data exportada em AAAA-MM-DD' (
+            $datasErradasExp -eq 0) ('datas erradas=' + $datasErradasExp)
+        Check 'todo valor exportado com ponto e 2 casas' (
+            $valoresErradosExp -eq 0) ('valores errados=' + $valoresErradosExp)
+        Check 'todo trntype do banco no arquivo' (
+            $tiposErradosExp -eq 0) ('tipos errados=' + $tiposErradosExp)
+        Check 'todo chknum do banco no arquivo' (
+            $docsErradosExp -eq 0) ('documentos errados=' + $docsErradosExp)
+        Check 'soma dos valores exportados = 396.25' (
+            [Math]::Abs($somaExportada - 396.25) -lt 0.001) (
+            'soma=' + $somaExportada)
+        # O memo COM ASPAS e' a prova do escapamento: 173 das 188 linhas do
+        # fixture trazem aspas no MEMO, e no arquivo elas sao '""' dentro do
+        # envoltorio - desenvolver o campo tem de devolver o MESMO texto que
+        # o banco guarda ($nMemo, medido la' em cima).
+        Check 'memo com aspas exportado e devolvido inteiro' (
+            $memosComAspas -eq $nMemo) (
+            'arquivo=' + $memosComAspas + ' banco=' + $nMemo)
+        # Sem a ID no arquivo, o que prova que nenhuma linha caiu nem entrou
+        # duas vezes e' o TOTAL DE CADA MES: a quantidade de linhas de cada mes
+        # no arquivo tem de ser a mesma que o banco tem gravada - as 18 chaves
+        # sao as mesmas do $somasMes, que ja' foram conferidas contra o banco.
+        $mesesDiferentes = 0
+        foreach ($mesExp in $porMesArquivo.Keys) {
+            $qtdBancoMes = [Sq]::Consultar($minewDb,
+                "SELECT COUNT(*) FROM extratos WHERE substr(dtposted, 1, 7) = '" +
+                $mesExp + "';")
+            if ($qtdBancoMes -ne $porMesArquivo[$mesExp]) { $mesesDiferentes++ }
+        }
+        Check 'arquivo exportado com o MESMO total por mes do banco' (
+            ($porMesArquivo.Count -eq $somasMes.Count) -and
+            ($mesesDiferentes -eq 0)) (
+            'meses arquivo=' + $porMesArquivo.Count + ' banco=' +
+            $somasMes.Count + ' divergentes=' + $mesesDiferentes)
+    }
+
     # ------------------------------------------------ [12] estado final + WER
     Write-Banner '[12/12] Estado final e log de crashes do Windows'
     if (-not (Test-Path $db)) {
@@ -3891,6 +4125,10 @@ finally {
     # ... e o extrato de OUTRA conta, que a importacao tem de recusar
     if (Test-Path $ofxOutraConta) {
         Remove-Item $ofxOutraConta -Force -ErrorAction SilentlyContinue
+    }
+    # o CSV que o miExpTrans exportou no passo [11] (nome do proprio teste)
+    if (Test-Path $exportaCsv) {
+        Remove-Item $exportaCsv -Force -ErrorAction SilentlyContinue
     }
 }
 

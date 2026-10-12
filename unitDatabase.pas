@@ -58,6 +58,17 @@ function ImportarExtratos(AConn: TSQLite3Connection; AAccountId: Integer;
 function ImportarCsv(AConn: TSQLite3Connection; AAccountId: Integer;
   const ARegistros: TRegistrosOfx): Integer;
 
+// Exporta as linhas da conta AAccountId para AFileName no MESMO formato que
+// ImportarCsv le' (cabecalho com os nomes das colunas, ';' entre campos, data
+// em AAAA-MM-DD e valor com ponto decimal): e' o passo inverso do importar, e
+// o arquivo que sai daqui pode ser importado de volta sem mexer em nada.
+// A chave interna da tabela NAO sai no arquivo: ela e' do banco, e a
+// importacao le' as colunas pelo nome - o arquivo e' so' o extrato.
+// Devolve quantas linhas foram escritas (0 = a conta nao tem transacao);
+// arquivo ilegivel ou disco cheio levantam excecao, com o dialogo do chamador.
+function ExportarCsv(AConn: TSQLite3Connection; AAccountId: Integer;
+  const AFileName: string): Integer;
+
 implementation
 
 uses
@@ -108,6 +119,11 @@ const
     #9'PRIMARY KEY("id" AUTOINCREMENT),' + LineEnding +
     #9'FOREIGN KEY("account_id") REFERENCES "contas"("id")' + LineEnding +
     ');';
+
+  // BOM de UTF-8 (EF BB BF) na frente do CSV exportado: o leitor do projeto
+  // tira sozinho, entao ele nao muda a reentrada do arquivo - e' so' para
+  // Excel/Notepad abrirem os acentos dos memos em vez de "�".
+  BomUtf8: array[0..2] of Byte = ($EF, $BB, $BF);
 
 function DatabasePath: string;
 begin
@@ -684,6 +700,85 @@ begin
   // dedup de ImportarExtratos nao retira linha nenhuma - e AJaExistiam sai
   // zerado, que e' justamente o que se espera de uma substituicao.
   Result := ImportarExtratos(AConn, AAccountId, ARegistros, jaExistiam);
+end;
+
+function ExportarCsv(AConn: TSQLite3Connection; AAccountId: Integer;
+  const AFileName: string): Integer;
+var
+  consulta: TSQLQuery;
+  linhas: TStringList;
+  fs: TFileStream;
+  texto, data: string;
+  formatos: TFormatSettings;
+begin
+  Result := 0;
+
+  // O arquivo e' do tipo do arquivo que a importacao le': ponto decimal e nada
+  // de separador de milhar (o FORMAT da tela e' outro, com milhar e virgula).
+  formatos := DefaultFormatSettings;
+  formatos.DecimalSeparator := '.';
+  formatos.ThousandSeparator := #0;
+
+  linhas := TStringList.Create;
+  consulta := TSQLQuery.Create(nil);
+  try
+    consulta.Database := AConn;
+    consulta.Transaction := AConn.Transaction;
+    // CAST no trnamt e' o mesmo de LinhasDoPeriodo: a coluna NUMERIC sem
+    // precisao o driver tipa como inteiro e AsFloat devolveria o valor sem os
+    // centavos. A ordenacao e' por DATA e nao por texto porque dtposted guarda
+    // as duas formas - OFX grava AAAAMMDD e CSV grava AAAA-MM-DD - e por texto
+    // as duas nao se misturam em ordem: tirar as barras deixa os dois na mesma
+    // forma numerica, que ja' e' cronologica. O id entra so' no ORDER BY, como
+    // desempate - duas linhas do mesmo dia saem sempre na mesma ordem, e ele
+    // nao vai para o arquivo.
+    consulta.SQL.Text :=
+      'SELECT trntype, dtposted, CAST(trnamt AS REAL) AS trnamt, memo,' +
+      ' chknum FROM extratos WHERE account_id = ' + IntToStr(AAccountId) +
+      ' ORDER BY CAST(REPLACE(dtposted, ''-'', '''') AS INTEGER), id;';
+    consulta.Open;
+
+    // O cabecalho e' o do modelo que LerCsv exige (menos a ID, que e' do
+    // banco): ele acha as colunas PELO NOME, entao qualquer ordem serviria -
+    // manter a do modelo deixa o arquivo com a mesma cara do backup.
+    linhas.Add('TRNTYPE;DTPOSTED;TRNAMT;CHKNUM;MEMO');
+    while not consulta.EOF do
+    begin
+      // A data sai SEMPRE em AAAA-MM-DD, a forma do modelo e a que a grade
+      // exige - DataIsoDtposted tambem corta a sobra de hora/fuso que um OFX
+      // traria. Data ilegivel sai como estava, para o arquivo nao esconder a
+      // linha (quem reimportar e' que decide o que fazer com ela).
+      data := DataIsoDtposted(consulta.FieldByName('dtposted').AsString);
+      if data = '' then
+        data := consulta.FieldByName('dtposted').AsString;
+
+      // 2 casas, como o valor que a grade mostra e como o OFX traz: "4000.00"
+      // e "-80.90", que EhNumeroCsv aceita e NumeroOfx le' de volta igual.
+      linhas.Add(EscaparCampoCsv(consulta.FieldByName('trntype').AsString) +
+        ';' + EscaparCampoCsv(data) + ';' +
+        Format('%.2f', [consulta.FieldByName('trnamt').AsFloat], formatos) +
+        ';' + EscaparCampoCsv(consulta.FieldByName('chknum').AsString) + ';' +
+        EscaparCampoCsv(consulta.FieldByName('memo').AsString));
+      Inc(Result);
+      consulta.Next;
+    end;
+    consulta.Close;
+
+    // A gravacao vem por ultimo: se a leitura falhar no meio, nao sobra
+    // arquivo pela metade (nem o antigo e' apagado).
+    fs := TFileStream.Create(AFileName, fmCreate);
+    try
+      fs.WriteBuffer(BomUtf8[0], Length(BomUtf8));
+      texto := linhas.Text;
+      if texto <> '' then
+        fs.WriteBuffer(texto[1], Length(texto));
+    finally
+      fs.Free;
+    end;
+  finally
+    consulta.Free;
+    linhas.Free;
+  end;
 end;
 
 end.

@@ -532,6 +532,7 @@ object FormMoney: TFormMoney
       end
       object miExpTrans: TMenuItem
         Caption = 'Exportar Transações (CSV)'
+        OnClick = miExpTransClick
       end
       object miExpSal: TMenuItem
         Caption = 'Exportar Saldos (CSV)'
@@ -599,6 +600,14 @@ object FormMoney: TFormMoney
     DataSet = SQLQueryBanks
     Left = 24
     Top = 288
+  end
+  object dlgExpCsv: TSaveDialog
+    Title = 'Exportar Transações (CSV)'
+    DefaultExt = '.csv'
+    Filter = 'Arquivos CSV (*.csv)|*.csv|Todos os arquivos (*.*)|*.*'
+    Options = [ofOverwritePrompt, ofHideReadOnly, ofPathMustExist, ofEnableSizing]
+    Left = 264
+    Top = 160
   end
   object dlgImportar: TOpenDialog
     Title = 'Importar extrato (OFC/OFX)'

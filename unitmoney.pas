@@ -70,6 +70,9 @@ type
     // Database novo/aberto (menu "Novo Database" / "Abrir Database") -> aba
     // tbContas: mesma cadeia conexão -> transaction -> query -> datasource da
     // aba tbBancos; os dois menus só trocam o arquivo dessa mesma cadeia.
+    // Transacoes (miExpTrans): extrato inteiro da conta escolhida no
+    // cbAccount gravado em CSV - o MESMO formato que o dlgImpCsv le' de volta.
+    dlgExpCsv: TSaveDialog;
     // Extrato (miImport): arquivo OFC/OFX escolhido pelo usuario - o
     // conteudo vai para a tabela "extratos", na conta selecionada na tela.
     dlgImportar: TOpenDialog;
@@ -140,6 +143,10 @@ type
     procedure miCloseClick(Sender: TObject);
     procedure miGerConClick(Sender: TObject);
     procedure miGerSalClick(Sender: TObject);
+    // "Exportar Transacoes (CSV)": le o extrato inteiro da conta escolhida no
+    // cbAccount e grava um CSV no MESMO formato que o miImpTrans le' - da' para
+    // importar o arquivo de volta e para levar o historico para outra maquina.
+    procedure miExpTransClick(Sender: TObject);
     procedure miImportClick(Sender: TObject);
     // "Importar Transacoes (CSV)": le um CSV (o modelo e' backup/extrato.csv)
     // e SUBSTITUI o conteudo de "extratos" e "saldos" pelas linhas dele - a
@@ -1885,6 +1892,63 @@ begin
     mensagem := mensagem + LineEnding + IntToStr(ignorados) + ' ' +
       Plural(ignorados, 'linha ignorada (sem data ou sem valor válido).',
       'linhas ignoradas (sem data ou sem valor válido).');
+  MessageDlg(mensagem, mtInformation, [mbOK], 0);
+end;
+
+procedure TFormMoney.miExpTransClick(Sender: TObject);
+var
+  caminho, contaTexto, mensagem: string;
+  contaId, exportados: Integer;
+begin
+  // Mesmo destino do miImpTrans: a conta escolhida no filtro. Exportar é o
+  // passo inverso, então vale o mesmo aviso da falta de conta - sem conta
+  // escolhida não há extrato nenhum para levar para o arquivo.
+  if (cbAccount.ItemIndex < 0) or (cbAccount.ItemIndex >= cbAccount.Items.Count)
+  then
+  begin
+    MessageDlg('Escolha uma conta antes de exportar as transações.' +
+      LineEnding + 'O CSV leva o extrato inteiro da conta escolhida no filtro.',
+      mtWarning, [mbOK], 0);
+    Exit;
+  end;
+  contaId := Integer(PtrInt(cbAccount.Items.Objects[cbAccount.ItemIndex]));
+  contaTexto := cbAccount.Text;
+
+  // O diálogo abre na pasta da aplicação, sugerindo "extratos.csv".
+  dlgExpCsv.InitialDir := ExtractFilePath(ParamStr(0));
+  dlgExpCsv.FileName := 'extratos.csv';
+  if not dlgExpCsv.Execute then
+    Exit; // usuário cancelou
+
+  caminho := dlgExpCsv.FileName;
+  // O filtro já é *.csv, mas ele pode digitar outro nome de extensão.
+  if LowerCase(ExtractFileExt(caminho)) <> '.csv' then
+    caminho := ChangeFileExt(caminho, '.csv');
+  // Caminho relativo (sem pasta) fica na pasta inicial do diálogo, para o
+  // arquivo não cair no diretório de trabalho corrente da aplicação.
+  if ExtractFilePath(caminho) = '' then
+    caminho := IncludeTrailingPathDelimiter(dlgExpCsv.InitialDir) + caminho;
+
+  // Exportar não mexe no que está gravado nem na tela: a leitura roda em outra
+  // query, só de leitura, na MESMA conexão - então nada aqui fecha as queries
+  // nem recarrega os filtros, como nos importar.
+  try
+    exportados := ExportarCsv(SQLite3ConnContas, contaId, caminho);
+  except
+    on E: Exception do
+    begin
+      MessageDlg('Não foi possível exportar "' + caminho + '".' + LineEnding +
+        E.Message, mtError, [mbOK], 0);
+      Exit;
+    end;
+  end;
+
+  // O usuário precisa saber as DUAS coisas: quanto saiu e para onde - e
+  // exportar zero linhas também é resposta, não é silêncio.
+  mensagem := 'Exportação concluída.' + LineEnding + LineEnding +
+    IntToStr(exportados) + ' ' + Plural(exportados, 'transação',
+    'transações') + ' ' + Plural(exportados, 'exportada', 'exportadas') +
+    ' de "' + contaTexto + '".' + LineEnding + 'Arquivo: ' + caminho;
   MessageDlg(mensagem, mtInformation, [mbOK], 0);
 end;
 
