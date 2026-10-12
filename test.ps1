@@ -63,6 +63,10 @@ $dll    = Join-Path $root 'sqlite3.dll'
 $db     = Join-Path $root 'banks.db'
 $minewDb = Join-Path $root 'miNew-test.db'
 $lixoDb  = Join-Path $root 'lixo-test.db'
+# Database SEM a coluna "hidden" (esquema anterior a mudanca) e database com
+# uma conta marcada como oculta: os dois sao do proprio teste do miOpen.
+$antigoDb = Join-Path $root 'miOpen-antigo.db'
+$ocultoDb = Join-Path $root 'miOpen-oculto.db'
 $ofxUtf8 = Join-Path $root 'importa-test.ofx'
 $ofxAnsi = Join-Path $root 'importa-test-ansi.ofx'
 $ofxOutraConta = Join-Path $root 'importa-test-conta.ofx'
@@ -1357,7 +1361,7 @@ try {
         $ordemContas = $true
         $posContas = -1
         foreach ($campoContas in @('acctid', 'accttype', 'bankid', 'branchid',
-                'description')) {
+                'hidden', 'description')) {
             $posNova = $blocoContas.IndexOf("FieldName = '" + $campoContas + "'")
             if ($posNova -le $posContas) { $ordemContas = $false; break }
             $posContas = $posNova
@@ -1367,7 +1371,7 @@ try {
             $detContas = 'coluna de "id" declarada no bloco gridContas'
         }
     }
-    Check 'gridContas esconde o id e mostra acctid, accttype, bankid, branchid e description (.lfm)' (
+    Check 'gridContas esconde o id e mostra acctid, accttype, bankid, branchid, hidden e description (.lfm)' (
         $ordemContas) $detContas
     # Rotulos do gridContas: mesmo par (campo, rotulo) por item - o vinculo
     # dentro do item prova que o rotulo e' do campo certo, e a ordem das
@@ -1378,6 +1382,7 @@ try {
     $esperadoContas = @(
         @('acctid', 'Conta'), @('accttype', 'Tipo'), @('bankid', 'Banco'),
         @('branchid', ('Ag' + [char]0x00EA + 'ncia')),
+        @('hidden', 'Oculta'),
         @('description', ('Descri' + [char]0x00E7 + [char]0x00E3 + 'o')))
     $detRotulos = $detContas
     $rotulosContas = $false
@@ -1385,7 +1390,7 @@ try {
         $detRotulos = Test-LfmLabels (Get-LfmColumns $blocoContas) $esperadoContas
         $rotulosContas = ($detRotulos -eq $null)
     }
-    Check 'gridContas rotula as colunas (Conta, Tipo, Banco, Agencia, Descricao) (.lfm)' (
+    Check 'gridContas rotula as colunas (Conta, Tipo, Banco, Agencia, Oculta, Descricao) (.lfm)' (
         $rotulosContas) $detRotulos
     # Coluna "Banco" do gridContas edita por combo (cbsPickList) com os nomes
     # de tbBancos e grava o id: OnSelectEditor repoe o combo a cada edicao (a
@@ -1407,6 +1412,33 @@ try {
         ($pasTexto -match
             "FieldByName\('bankid'\)\.OnSetText\s*:=\s*@BancoIdSetText")) (
         'BancoIdSetText e/ou a ligacao do OnSetText de bankid ausentes')
+    # Coluna "Oculta" (o campo hidden): e' INTEGER, entao sem OnGetText a grade
+    # desenharia "0"/"1" cru; e como a celula grava via Field.Text, o SetText
+    # vem junto senao "Sim" viraria erro de conversao. O combo e' da PROPRIA
+    # coluna, com lista fixa no .lfm - o gridContasSelectEditor so' mexe na
+    # coluna "bankid" e deixa esta como esta. Os acentos vao por [char] (o .ps1
+    # e' ANSI, o .lfm e' UTF-8).
+    $naoColuna = "'N" + [char]0x00E3 + "o'"
+    Check 'gridContas tem a coluna "Oculta" como combo Sim/Nao (.lfm)' (
+        $blocoContas.Contains("Title.Caption = 'Oculta'") -and
+        $blocoContas.Contains('PickList.Strings = (') -and
+        $blocoContas.Contains("'Sim'") -and
+        $blocoContas.Contains($naoColuna)) (
+        'coluna "Oculta" e/ou a PickList Sim/Nao ausente no gridContas')
+    Check 'coluna "Oculta" traduz 0/1 para Sim/Nao na exibicao (.pas)' (
+        ($pasTexto -match
+            'procedure\s+ContaHiddenGetText\s*\(Sender: TField') -and
+        ($pasTexto -match 'procedure\s+TFormMoney\.ContaHiddenGetText') -and
+        ($pasTexto -match
+            "FieldByName\('hidden'\)\.OnGetText\s*:=\s*@ContaHiddenGetText")) (
+        'ContaHiddenGetText e/ou a ligacao do OnGetText de hidden ausentes')
+    Check 'coluna "Oculta" devolve 0/1 na gravacao (.pas)' (
+        ($pasTexto -match
+            'procedure\s+ContaHiddenSetText\s*\(Sender: TField') -and
+        ($pasTexto -match 'procedure\s+TFormMoney\.ContaHiddenSetText') -and
+        ($pasTexto -match
+            "FieldByName\('hidden'\)\.OnSetText\s*:=\s*@ContaHiddenSetText")) (
+        'ContaHiddenSetText e/ou a ligacao do OnSetText de hidden ausentes')
     Check 'combo de bancos alimentado pela query de tbBancos (.pas)' (
         $pasTexto -match "SQLQueryBanks\.FieldByName\('name'\)") (
         'MontarListaBancos nao le a query de tbBancos')
@@ -1488,6 +1520,25 @@ try {
         ($pasTexto -match
             'procedure\s+TFormMoney\.SQLQuerySaldosNewRecord')) (
         'handler SQLQuerySaldosNewRecord ausente')
+    # Mesmo trio para a "contas": "hidden" e' NOT NULL e no registro NOVO o
+    # campo ainda esta vazio (a coluna "Oculta" so' existe na grade - nada foi
+    # digitado nela), entao sem OnNewRecord o INSERT que o SQLDB montaria
+    # mandaria NULL e o SQLite recusaria a linha - e' o unico caminho de
+    # CADASTRAR conta, o projeto nao tem INSERT em Pascal.
+    Check 'SQLQueryContas nasce com "hidden" visivel no registro novo (.lfm)' (
+        $blocoSQLContas.Contains('OnNewRecord = SQLQueryContasNewRecord')) (
+        'OnNewRecord = SQLQueryContasNewRecord ausente na query de contas')
+    Check 'OnNewRecord de contas declarado e implementado (.pas)' (
+        ($pasTexto -match
+            'procedure\s+SQLQueryContasNewRecord\s*\(DataSet: TDataSet\)') -and
+        ($pasTexto -match
+            'procedure\s+TFormMoney\.SQLQueryContasNewRecord')) (
+        'handler SQLQueryContasNewRecord ausente')
+    # ... e a regra de leitura: o combo de contas e' o filtro da tela, e ele
+    # so' lista o que nao esta marcado como oculto.
+    Check 'cbAccount so lista conta visivel: WHERE hidden = 0 (.pas)' (
+        $pasTexto -match 'WHERE hidden = 0 ORDER BY id') (
+        'filtro hidden ausente no AtualizarComboContas')
     # enddate: gravado como AAAA-MM-DD (texto puro no SQLite) e exibido/editado
     # como DD/MM/AAAA. Tres pecas obrigatorias: OnGetText (formata tambem o
     # texto do editor, que e' o que a mascara espera), OnSetText (converte de
@@ -1887,6 +1938,15 @@ try {
             Check 'tabela "contas" presente' $textoNovo.Contains('CREATE TABLE "contas"')
             Check 'tabela "extratos" presente' $textoNovo.Contains('CREATE TABLE "extratos"')
             Check 'tabela "saldos" presente' $textoNovo.Contains('CREATE TABLE "saldos"')
+            # O "hidden" nasce no proprio CREATE TABLE do miNew: e' ele que
+            # faz o combo de contas conseguir filtrar sem precisar de ALTER.
+            Check 'coluna "hidden" no CREATE TABLE de "contas"' (
+                $textoNovo.Contains('"hidden"')) 'ausente no SQL do miNew'
+            # ... e com DEFAULT: sem ele todo INSERT que nao nomeia a coluna
+            # (fixture do teste, registro novo da grade) e' recusado com
+            # "NOT NULL constraint failed".
+            Check '"hidden" nasce com DEFAULT 0 (INSERT pode omiti-la)' (
+                $textoNovo.Contains('DEFAULT 0')) 'DEFAULT ausente no SQL do miNew'
         }
     }
     catch {
@@ -2032,6 +2092,102 @@ try {
                 'janelas=' + $visRec.Count)
         }
 
+        # (d) database no esquema ANTIGO: as 3 tabelas que IsAccountsDatabase
+        # pede, mas sem a coluna "hidden" em "contas" - e' o arquivo de todo
+        # database criado antes desta mudanca. A abertura tem de envelhecer o
+        # arquivo (ADD COLUMN, DEFAULT 0) sem perder conta nenhuma.
+        $ddlAntigo =
+            'CREATE TABLE "contas" ("id" INTEGER NOT NULL,"acctid" TEXT NOT NULL,' +
+            '"accttype" TEXT,"bankid" INTEGER NOT NULL,"branchid" TEXT NOT NULL,' +
+            '"description" TEXT,PRIMARY KEY("id" AUTOINCREMENT));' +
+            'CREATE TABLE "extratos" ("id" INTEGER NOT NULL,"account_id" INTEGER NOT NULL,' +
+            '"trntype" TEXT NOT NULL,"dtposted" TEXT NOT NULL,"trnamt" NUMERIC NOT NULL,' +
+            '"memo" TEXT,"chknum" TEXT,PRIMARY KEY("id" AUTOINCREMENT),' +
+            'FOREIGN KEY("account_id") REFERENCES "contas"("id"));' +
+            'CREATE TABLE "saldos" ("id" INTEGER NOT NULL,"account_id" INTEGER NOT NULL,' +
+            '"balance" NUMERIC NOT NULL,"enddate" TEXT NOT NULL,PRIMARY KEY("id" AUTOINCREMENT),' +
+            'FOREIGN KEY("account_id") REFERENCES "contas"("id"));' +
+            'INSERT INTO contas (acctid, accttype, bankid, branchid, description)' +
+            ' VALUES (''111'',''CHECKING'',1,''0001'',''Conta um''),' +
+            '(''222'',''SAVINGS'',1,''0002'',''Conta dois'');'
+        if (Test-Path $antigoDb) {
+            Remove-Item $antigoDb -Force -ErrorAction SilentlyContinue
+        }
+        Check 'database antigo (sem "hidden") criado pelo teste' (
+            [Sq]::Executar($antigoDb, $ddlAntigo) -eq 1)
+        $dlgAnt = Invoke-MenuFileDialog $pAbrir 'Abrir Database'
+        Check 'dialogo "Abrir" abriu (database antigo)' ($dlgAnt -ne [IntPtr]::Zero)
+        if ($dlgAnt -ne [IntPtr]::Zero) {
+            $editAnt = Set-FileDialogName $dlgAnt $antigoDb
+            Check 'campo de nome do arquivo encontrado (antigo)' (
+                $editAnt -ne [IntPtr]::Zero)
+            Check 'dialogo fechou ao confirmar (antigo)' (Wait-DialogClosed $dlgAnt)
+            $avisoAnt = [IntPtr]::Zero
+            for ($t = 0; ($t -lt 12) -and ($avisoAnt -eq [IntPtr]::Zero); $t++) {
+                Start-Sleep -Milliseconds 250
+                $avisoAnt = [UiTest]::FindDialog([uint32]$pAbrir.Id)
+            }
+            Check 'database antigo abriu sem aviso (coluna "hidden" adicionada)' (
+                $avisoAnt -eq [IntPtr]::Zero) ('hwnd=' + $avisoAnt)
+            [void]@(Wait-Interface $mainAbrir $true)
+            $cbAnt = Find-ComboHwnd $mainAbrir 212
+            $nAnt  = Get-ComboCount $cbAnt
+            Check 'cbAccount lista as 2 contas do database antigo' ($nAnt -eq 2) (
+                'combo=' + $cbAnt + ' itens=' + $nAnt)
+            $pAbrir.Refresh()
+            Check 'aplicacao viva apos abrir o database antigo' (-not $pAbrir.HasExited)
+        }
+
+        # (d2) database com a coluna ja' existente e UMA conta oculta: agora a
+        # regra e' do FILTRO, nao do esquema - hidden = 1 continua gravada
+        # (os extratos dela nao somem), mas nao entra no combo de contas.
+        $ddlOculto =
+            'CREATE TABLE "contas" ("id" INTEGER NOT NULL,"acctid" TEXT NOT NULL,' +
+            '"accttype" TEXT,"bankid" INTEGER NOT NULL,"branchid" TEXT NOT NULL,' +
+            '"description" TEXT,"hidden" INTEGER NOT NULL DEFAULT 0,' +
+            'PRIMARY KEY("id" AUTOINCREMENT));' +
+            'CREATE TABLE "extratos" ("id" INTEGER NOT NULL,"account_id" INTEGER NOT NULL,' +
+            '"trntype" TEXT NOT NULL,"dtposted" TEXT NOT NULL,"trnamt" NUMERIC NOT NULL,' +
+            '"memo" TEXT,"chknum" TEXT,PRIMARY KEY("id" AUTOINCREMENT),' +
+            'FOREIGN KEY("account_id") REFERENCES "contas"("id"));' +
+            'CREATE TABLE "saldos" ("id" INTEGER NOT NULL,"account_id" INTEGER NOT NULL,' +
+            '"balance" NUMERIC NOT NULL,"enddate" TEXT NOT NULL,PRIMARY KEY("id" AUTOINCREMENT),' +
+            'FOREIGN KEY("account_id") REFERENCES "contas"("id"));' +
+            'INSERT INTO contas (acctid, accttype, bankid, branchid, description, hidden)' +
+            ' VALUES (''111'',''CHECKING'',1,''0001'',''Conta visivel'',0),' +
+            '(''222'',''SAVINGS'',1,''0002'',''Conta oculta'',1);'
+        if (Test-Path $ocultoDb) {
+            Remove-Item $ocultoDb -Force -ErrorAction SilentlyContinue
+        }
+        Check 'database com conta oculta criado pelo teste' (
+            [Sq]::Executar($ocultoDb, $ddlOculto) -eq 1)
+        $dlgOcu = Invoke-MenuFileDialog $pAbrir 'Abrir Database'
+        Check 'dialogo "Abrir" abriu (conta oculta)' ($dlgOcu -ne [IntPtr]::Zero)
+        if ($dlgOcu -ne [IntPtr]::Zero) {
+            $editOcu = Set-FileDialogName $dlgOcu $ocultoDb
+            Check 'campo de nome do arquivo encontrado (conta oculta)' (
+                $editOcu -ne [IntPtr]::Zero)
+            Check 'dialogo fechou ao confirmar (conta oculta)' (
+                Wait-DialogClosed $dlgOcu)
+            $avisoOcu = [IntPtr]::Zero
+            for ($t = 0; ($t -lt 12) -and ($avisoOcu -eq [IntPtr]::Zero); $t++) {
+                Start-Sleep -Milliseconds 250
+                $avisoOcu = [UiTest]::FindDialog([uint32]$pAbrir.Id)
+            }
+            Check 'database com conta oculta abriu sem aviso' (
+                $avisoOcu -eq [IntPtr]::Zero) ('hwnd=' + $avisoOcu)
+            [void]@(Wait-Interface $mainAbrir $true)
+            $cbOcu = Find-ComboHwnd $mainAbrir 212
+            $nOcu  = Get-ComboCount $cbOcu
+            # Duas linhas em "contas", UMA no combo: so' assim o "$nOcu = 1"
+            # prova filtro (se a query falhasse, daria 0 e nao 1).
+            Check 'cbAccount esconde a conta com "hidden" = 1' ($nOcu -eq 1) (
+                'combo=' + $cbOcu + ' itens=' + $nOcu)
+            $pAbrir.Refresh()
+            Check 'aplicacao viva apos abrir o database com conta oculta' (
+                -not $pAbrir.HasExited)
+        }
+
         # O SQLite mantem o arquivo aberto enquanto a aplicacao vive: o hash
         # so' pode ser comparado depois de mata-la (bloqueio leitura/escrita).
         try { $pAbrir.Kill(); $pAbrir.WaitForExit() } catch { }
@@ -2044,6 +2200,37 @@ try {
         if ($pAbrir -and -not $pAbrir.HasExited) {
             try { $pAbrir.Kill(); $pAbrir.WaitForExit() } catch { }
         }
+    }
+    # Com a aplicacao morta da para ler o arquivo que ela acabou de gravar
+    # (mesma razao do hash de banks.db: o SQLite segura o lock em vida).
+    if (Test-Path $antigoDb) {
+        $migrou = [Sq]::Consultar($antigoDb,
+            'SELECT COUNT(*) FROM pragma_table_info(''contas'') WHERE name = ''hidden'';')
+        Check 'abertura do database antigo adicionou a coluna "hidden"' (
+            $migrou -eq 1) ('valor=' + $migrou)
+        $totalAnt = [Sq]::Consultar($antigoDb, 'SELECT COUNT(*) FROM contas;')
+        Check 'nenhuma conta perdida na migracao' ($totalAnt -eq 2) (
+            'valor=' + $totalAnt)
+        $visAnt = [Sq]::Consultar($antigoDb,
+            'SELECT COUNT(*) FROM contas WHERE hidden = 0;')
+        Check 'contas migradas nasceram visiveis (hidden = 0)' ($visAnt -eq 2) (
+            'valor=' + $visAnt)
+    }
+    else {
+        Check 'database antigo persistido apos a abertura' $false 'arquivo ausente'
+    }
+    if (Test-Path $ocultoDb) {
+        $ocultas = [Sq]::Consultar($ocultoDb,
+            'SELECT COUNT(*) FROM contas WHERE hidden = 1;')
+        Check 'conta oculta continua GRAVADA apos a abertura' ($ocultas -eq 1) (
+            'valor=' + $ocultas)
+        $totalOcu = [Sq]::Consultar($ocultoDb, 'SELECT COUNT(*) FROM contas;')
+        Check 'conta oculta saiu so do combo, nao da tabela' ($totalOcu -eq 2) (
+            'valor=' + $totalOcu)
+    }
+    else {
+        Check 'database com conta oculta persistido apos a abertura' $false (
+            'arquivo ausente')
     }
     if ($hashAbr -and (Test-Path $db)) {
         Check 'banks.db nao foi alterado pelo miOpen' ((Get-Hash $db) -eq $hashAbr)
@@ -4641,6 +4828,13 @@ finally {
     # arquivo invalido do teste do "Abrir Database"
     if (Test-Path $lixoDb) {
         Remove-Item $lixoDb -Force -ErrorAction SilentlyContinue
+    }
+    # os dois databases do teste do miOpen (esquema antigo e conta oculta)
+    if (Test-Path $antigoDb) {
+        Remove-Item $antigoDb -Force -ErrorAction SilentlyContinue
+    }
+    if (Test-Path $ocultoDb) {
+        Remove-Item $ocultoDb -Force -ErrorAction SilentlyContinue
     }
     # extratos de teste do miImport (UTF-8 e ANSI, nomes do proprio teste)
     if (Test-Path $ofxUtf8) {

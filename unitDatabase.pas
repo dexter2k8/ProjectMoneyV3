@@ -16,6 +16,15 @@ procedure EnsureDatabase;
 // Devolve False (com diálogo de erro) quando não consegue; nesse caso remove
 // o arquivo incompleto. Se já existir, é substituído: quem confirma é o chamador.
 function NewDatabase(const AFileName: string): Boolean;
+// Garante a coluna "hidden" em "contas" num database que ja' existe: o
+// SqlCreateContas ja' nasce com ela, mas os arquivos criados ANTES desta
+// mudanca nao tem, e sem a coluna a query do cbAccount falharia ao abrir.
+// Roda numa CONEXAO PROPRIA, fechada aqui, e antes da interface ligar ao
+// arquivo - o Commit na conexao dela fecharia a query que vai abrir logo
+// em seguida (e' o mesmo motivo de ImportarCsv/ExcluirMes recarregarem).
+// Nao faz nada quando a coluna ja' existe, e nao mostra dialogo: o erro
+// propaga e o chamador (miOpen) tem o aviso de abrir database proprio.
+procedure GarantirColunaHidden(const AFileName: string);
 // Confere se AFileName é um database do ProjectMoney: abre como SQLite e tem
 // as tabelas "contas" (aba tbContas), "extratos" (grade da tela de extratos)
 // e "saldos" (aba tbSaldos) — as três que as queries da interface ligam ao
@@ -98,6 +107,13 @@ const
   // Database novo (menu "Novo Database"): contas + extratos + saldos.
   // PRIMARY KEY("id" AUTOINCREMENT) foi validado contra o sqlite3.dll do
   // projeto antes de virar constante (aceito pelo parser do SQLite).
+  // "hidden" e' o marcador de conta fora do filtro: 1 = a conta nao aparece no
+  // cbAccount (a regra de leitura e' do AtualizarComboContas). O DEFAULT 0 e'
+  // obrigatorio, nao decorativo: e' ele que deixa um INSERT nomear so' as
+  // colunas que ele conhece (a fixture do teste e o INSERT que o SQLDB monta
+  // para o registro novo da grade nao sabem que "hidden" existe) - sem ele o
+  // SQLite recusaria a linha com "NOT NULL constraint failed". O DEFAULT 0 e'
+  // tambem o que o GarantirColunaHidden usa para envelhecer database antigo.
   SqlCreateContas =
     'CREATE TABLE "contas" (' + LineEnding +
     #9'"id"'#9'INTEGER NOT NULL,' + LineEnding +
@@ -106,6 +122,7 @@ const
     #9'"bankid"'#9'INTEGER NOT NULL,' + LineEnding +
     #9'"branchid"'#9'TEXT NOT NULL,' + LineEnding +
     #9'"description"'#9'TEXT,' + LineEnding +
+    #9'"hidden"'#9'INTEGER NOT NULL DEFAULT 0,' + LineEnding +
     #9'PRIMARY KEY("id" AUTOINCREMENT)' + LineEnding +
     ');';
 
@@ -225,6 +242,61 @@ begin
   finally
     Trans.Free;
     Conn.Free;
+  end;
+end;
+
+procedure GarantirColunaHidden(const AFileName: string);
+var
+  Conn: TSQLite3Connection;
+  Trans: TSQLTransaction;
+  consulta: TSQLQuery;
+  temColuna: Boolean;
+begin
+  // Arquivo que nao existe nao e' problema aqui: o chamador (miOpen) ja'
+  // conferiu - e abrir criaria um arquivo VAZIO, sem as tabelas, o que a
+  // consulta abaixo leria como "sem a coluna" e levaria a um ALTER sobre
+  // tabela inexistente.
+  if not FileExists(AFileName) then
+    Exit;
+
+  Conn := TSQLite3Connection.Create(nil);
+  Trans := TSQLTransaction.Create(nil);
+  consulta := TSQLQuery.Create(nil);
+  try
+    Conn.DatabaseName := AFileName;
+    Conn.Transaction := Trans;
+    Conn.Open;
+    consulta.Database := Conn;
+    consulta.Transaction := Trans;
+    // O PRAGMA em forma de tabela e' o jeito direto de perguntar "a coluna
+    // existe?" sem casar com o TEXTO do CREATE TABLE, que o usuario pode ter
+    // mexido. pragma_table_info so' e' table-valued desde o SQLite 3.16; o
+    // sqlite3.dll do projeto e' o 3.53.
+    consulta.SQL.Text := 'SELECT COUNT(*) FROM pragma_table_info(' +
+      QuotedStr('contas') + ') WHERE name = ' + QuotedStr('hidden') + ';';
+    consulta.Open;
+    temColuna := consulta.Fields[0].AsInteger > 0;
+    consulta.Close;
+
+    // ADD COLUMN e' a UNICA sentenca que o SQLite aceita para envelhecer
+    // tabela existente - recriar a tabela custaria os dados do usuario. E
+    // ela OBRIGA DEFAULT quando a coluna e' NOT NULL: o registro ja' gravado
+    // tem de receber algum valor, e o 0 deixa TODAS as contas cadastradas
+    // visiveis - ninguem foi marcado como oculto, entao nada some do combo
+    // de proposito.
+    if not temColuna then
+      Conn.ExecuteDirect('ALTER TABLE "contas" ADD COLUMN "hidden" INTEGER' +
+        ' NOT NULL DEFAULT 0;', Trans);
+    // Commit tambem no caminho "ja' tem a coluna": a transacao foi aberta
+    // ali em cima, e um commit vazio nao tem custo - o que importa e' nao
+    // deixar transacao pendurada quando a conexao propria morrer no finally.
+    if Trans.Active then
+      Trans.Commit;
+  finally
+    consulta.Free;
+    Conn.Close;
+    Conn.Free;
+    Trans.Free;
   end;
 end;
 

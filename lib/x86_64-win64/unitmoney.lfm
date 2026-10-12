@@ -370,6 +370,17 @@ object FormMoney: TFormMoney
             FieldName = 'branchid'
           end        
           item
+            ButtonStyle = cbsPickList
+            SizePriority = 0
+            Title.Caption = 'Oculta'
+            Width = 90
+            FieldName = 'hidden'
+            PickList.Strings = (
+              'Sim'
+              'Não'
+            )
+          end        
+          item
             Title.Caption = 'Descrição'
             Width = 389
             FieldName = 'description'
@@ -661,6 +672,7 @@ object FormMoney: TFormMoney
     PacketRecords = -1
     FieldDefs = <>
     AfterOpen = SQLQueryContasAfterOpen
+    OnNewRecord = SQLQueryContasNewRecord
     Database = SQLite3ConnContas
     Transaction = SQLTransactionContas
     SQL.Strings = (

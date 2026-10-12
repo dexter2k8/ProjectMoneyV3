@@ -123,6 +123,12 @@ type
     procedure btnMonthClearClick(Sender: TObject);
     procedure cbAccountChange(Sender: TObject);
     procedure cbYearChange(Sender: TObject);
+    // "Oculta" (a coluna "hidden" da tbContas): a grade mostra Sim/Nao no lugar
+    // do 0/1 gravado - e' o unico lugar onde o usuario ve (e muda) se a conta
+    // sai do filtro do cbAccount.
+    procedure ContaHiddenGetText(Sender: TField; var AText: string;
+      DisplayText: Boolean);
+    procedure ContaHiddenSetText(Sender: TField; const AText: string);
     // Formatação da grade de extratos: os campos TEXT do SQLite viram ftMemo,
     // então a exibição passa pelo DisplayText, que é onde o OnGetText entra.
     // (Sem isso a data aparece como 20250305 e o valor sem C/D.)
@@ -199,6 +205,11 @@ type
     // contas: os campos são dinâmicos e cada Open os recria sem handlers —
     // o mesmo problema, e a mesma solução, dos extratos (PrepararCamposExtratos).
     procedure SQLQueryContasAfterOpen(DataSet: TDataSet);
+    // Registro novo da tbContas nasce VISIVEL: "hidden" e' NOT NULL, nao tem
+    // campo na grade para digita-la e a query da grade e' um SELECT *, entao
+    // sem este handler o INSERT que o SQLDB montaria levaria NULL e o SQLite
+    // recusaria a linha com "NOT NULL constraint failed".
+    procedure SQLQueryContasNewRecord(DataSet: TDataSet);
     // Registro novo da tbSaldos recebe a conta escolhida no cbAccount (a
     // coluna account_id está oculta na grade - é ela que filtra).
     procedure SQLQuerySaldosNewRecord(DataSet: TDataSet);
@@ -606,8 +617,13 @@ begin
   try
     consulta.Database := SQLite3ConnContas;
     consulta.Transaction := SQLTransactionContas;
+    // hidden = 1 e' a conta fora do filtro: ela continua GRAVADA (os extratos
+    // e os saldos dela nao somem), mas nao aparece no combo - o cbAccount e' o
+    // filtro da tela de extratos, nao a lista de cadastro (a grade de tbContas
+    // continua mostrando todas). O esquema garante NOT NULL DEFAULT 0, entao
+    // nao ha' linha sem marcador que escape do WHERE.
     consulta.SQL.Text := 'SELECT id, acctid, description FROM contas' +
-      ' ORDER BY id;';
+      ' WHERE hidden = 0 ORDER BY id;';
     consulta.Open;
     while not consulta.EOF do
     begin
@@ -1311,6 +1327,43 @@ begin
   if novoId >= 0 then
     Sender.AsInteger := novoId;
 end;
+
+// Mostra "Sim"/"Nao" no lugar do 0/1 gravado: o campo e' INTEGER, entao a
+// grade desenharia "0"/"1" cru sem este handler - a mesma traducao que o
+// BancoIdGetText faz do id do banco para o nome. DisplayText = False e' o
+// texto que vai para o EDITOR: a mesma palavra, entao a celula abre ja
+// legivel e o combo da PickList acha a entrada certa. Campo vazio fica
+// vazio - nao ha' o que traduzir.
+procedure TFormMoney.ContaHiddenGetText(Sender: TField; var AText: string;
+  DisplayText: Boolean);
+begin
+  if Sender.IsNull then
+  begin
+    AText := '';
+    Exit;
+  end;
+  if Sender.AsInteger = 0 then
+    AText := 'Não'
+  else
+    AText := 'Sim';
+end;
+
+// Gravacao da celula: o DBGrid escreve via Field.Text, entao o "Sim"/"Nao"
+// tem de voltar para 0/1. Aceita o que a grade mostra, a mesma palavra SEM
+// acento (quem digitar) e o proprio 0/1 (colar de planilha). Qualquer outro
+// texto NAO mexe no valor: apagar a celula nao pode virar "oculta" sem
+// querer, e lixo nao pode corromper uma coluna NOT NULL.
+procedure TFormMoney.ContaHiddenSetText(Sender: TField; const AText: string);
+var
+  texto: string;
+begin
+  texto := Trim(AText);
+  if (texto = '1') or SameText(texto, 'Sim') then
+    Sender.AsInteger := 1
+  else if (texto = '0') or (texto = '') or SameText(texto, 'Não') or
+    SameText(texto, 'Nao') then
+    Sender.AsInteger := 0;
+end;
 // Liga os handlers de banco logo depois de cada Open: os campos são
 // dinâmicos (FieldDefs vazio) e cada abertura os recria sem handlers — o
 // mesmo problema, e a mesma solução, dos extratos.
@@ -1318,6 +1371,18 @@ procedure TFormMoney.SQLQueryContasAfterOpen(DataSet: TDataSet);
 begin
   SQLQueryContas.FieldByName('bankid').OnGetText := @BancoIdGetText;
   SQLQueryContas.FieldByName('bankid').OnSetText := @BancoIdSetText;
+  SQLQueryContas.FieldByName('hidden').OnGetText := @ContaHiddenGetText;
+  SQLQueryContas.FieldByName('hidden').OnSetText := @ContaHiddenSetText;
+end;
+
+// Registro novo da tbContas nasce VISIVEL: "hidden" e' NOT NULL e no registro
+// novo o campo ainda esta vazio (a coluna "Oculta" existe na grade, mas nada
+// foi digitado nela). Sem isto o INSERT que o SQLDB montaria mandaria NULL e o
+// SQLite recusaria a linha - o DEFAULT 0 do esquema so' vale quando a coluna
+// e' OMITIDA do INSERT, e o SQLDB nomeia todas as colunas do SELECT *.
+procedure TFormMoney.SQLQueryContasNewRecord(DataSet: TDataSet);
+begin
+  DataSet.FieldByName('hidden').AsInteger := 0;
 end;
 
 // Registro novo da tbSaldos nasce com a conta escolhida no cbAccount: a
@@ -2146,6 +2211,13 @@ begin
     SQLQueryExtratos.Close;
     SQLQuerySaldos.Close;
     SQLite3ConnContas.Close;
+    // Database criado antes do campo "hidden" nao tem a coluna, e sem ela a
+    // query do cbAccount falharia logo abaixo. O ALTER roda numa CONEXAO
+    // PROPRIA, exatamente enquanto a da interface esta fechada: duas
+    // ligacoes ao mesmo arquivo brigariam pelo lock do SQLite, e um Commit
+    // na conexao da interface fecharia as queries que vao abrir agora (e'
+    // o mesmo motivo de ImportarCsv/ExcluirMes recarregarem apos o Commit).
+    GarantirColunaHidden(abrirArquivo);
     SQLite3ConnContas.DatabaseName := abrirArquivo;
     SQLQueryContas.Open;
     // O filtro precisa das combos preenchidas (conta de "contas", ano de
