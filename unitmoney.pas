@@ -38,13 +38,11 @@ type
     miGerSal: TMenuItem;
     miAbout: TMenuItem;
     mmHelp: TMenuItem;
-    miImpSal: TMenuItem;
     miImpTrans: TMenuItem;
     miExit: TMenuItem;
     miList: TMenuItem;
     miClose: TMenuItem;
     miOpen: TMenuItem;
-    miExpSal: TMenuItem;
     miExpTrans: TMenuItem;
     miImport: TMenuItem;
     mmTransactions: TMenuItem;
@@ -60,7 +58,6 @@ type
     sbtnVoltarSaldos: TSpeedButton;
     Separator1: TMenuItem;
     Separator2: TMenuItem;
-    Separator3: TMenuItem;
     Separator4: TMenuItem;
     sbtnVoltar: TSpeedButton;
     SQLite3ConnBancos: TSQLite3Connection;

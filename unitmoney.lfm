@@ -267,16 +267,15 @@ object FormMoney: TFormMoney
         Columns = <        
           item
             Title.Caption = 'Saldo'
-            Width = 273
+            Width = 410
             FieldName = 'balance'
           end        
           item
             Title.Caption = 'Data'
-            Width = 273
+            Width = 409
             FieldName = 'enddate'
           end>
         DataSource = DataSourceSaldos
-        Options = [dgEditing, dgTitles, dgIndicator, dgColumnResize, dgColumnMove, dgColLines, dgRowLines, dgTabs, dgAlwaysShowSelection, dgConfirmDelete, dgCancelOnExit]
         TabOrder = 0
       end
       object pnSaldosControl: TPanel
@@ -463,7 +462,7 @@ object FormMoney: TFormMoney
       end    
       item
         Title.Caption = 'Descrição'
-        Width = 547
+        Width = 437
         FieldName = 'memo'
       end    
       item
@@ -530,22 +529,13 @@ object FormMoney: TFormMoney
       object Separator1: TMenuItem
         Caption = '-'
       end
-      object miExpTrans: TMenuItem
-        Caption = 'Exportar Transações (CSV)'
-        OnClick = miExpTransClick
-      end
-      object miExpSal: TMenuItem
-        Caption = 'Exportar Saldos (CSV)'
-      end
-      object Separator3: TMenuItem
-        Caption = '-'
-      end
       object miImpTrans: TMenuItem
         Caption = 'Importar Transações (CSV)'
         OnClick = miImpTransClick
       end
-      object miImpSal: TMenuItem
-        Caption = 'Importar Saldos (CSV)'
+      object miExpTrans: TMenuItem
+        Caption = 'Exportar Transações (CSV)'
+        OnClick = miExpTransClick
       end
       object Separator4: TMenuItem
         Caption = '-'
@@ -678,9 +668,9 @@ object FormMoney: TFormMoney
     Top = 400
   end
   object SQLQuerySaldos: TSQLQuery
-    OnNewRecord = SQLQuerySaldosNewRecord
     PacketRecords = -1
     FieldDefs = <>
+    OnNewRecord = SQLQuerySaldosNewRecord
     Database = SQLite3ConnContas
     Transaction = SQLTransactionContas
     SQL.Strings = (
