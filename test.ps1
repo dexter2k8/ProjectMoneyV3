@@ -1066,23 +1066,35 @@ function Get-AnteriorValor([IntPtr]$Main) {
 }
 
 function Check-SobreposicaoExtratos([string]$Rotulo, [IntPtr]$Main) {
-    $grade = Find-GridTransHwnd $Main
-    $valor = Find-AnteriorValorHwnd $Main
-    $lbl = [IntPtr]::Zero
-    foreach ($w in @([UiTest]::Visible($Main))) {
-        if ($w -match '\| id=(\d+) \| "Anterior:" \|') {
-            $lbl = [IntPtr][int64]$Matches[1]
+    # A revelacao da tela de extratos vem em DUAS passadas de codigo:
+    # AtualizarEstadoDatabase esconde grade, rotulo e valor, e o
+    # IrParaTelaExtratos revela de novo. UM snapshot pode cair no meio e ver
+    # a tela a meio caminho (a grade ja' achada e o rotulo ainda fora), entao
+    # espera ate' 5 s o estado completo chegar - e a checagem continua
+    # falhando de verdade quando ele NUNCA chega.
+    $det = ''
+    $ok = $false
+    for ($tSo = 0; ($tSo -lt 20) -and (-not $ok); $tSo++) {
+        $grade = Find-GridTransHwnd $Main
+        $valor = Find-AnteriorValorHwnd $Main
+        $lbl = [IntPtr]::Zero
+        foreach ($w in @([UiTest]::Visible($Main))) {
+            if ($w -match '\| id=(\d+) \| "Anterior:" \|') {
+                $lbl = [IntPtr][int64]$Matches[1]
+            }
         }
+        $cobGrade = [UiTest]::AcimaSobreposta($grade)
+        $cobLbl = [UiTest]::AcimaSobreposta($lbl)
+        $cobValor = [UiTest]::AcimaSobreposta($valor)
+        $ok = ($grade -ne [IntPtr]::Zero) -and ($lbl -ne [IntPtr]::Zero) -and
+            ($valor -ne [IntPtr]::Zero) -and ($cobGrade -eq '') -and
+            ($cobLbl -eq '') -and ($cobValor -eq '')
+        $det = ('grade=' + $grade + ' cobrindo=' + $cobGrade +
+            ' rotulo=' + $lbl + ' cobrindo=' + $cobLbl +
+            ' valor=' + $valor + ' cobrindo=' + $cobValor)
+        if (-not $ok) { Start-Sleep -Milliseconds 250 }
     }
-    $cobGrade = [UiTest]::AcimaSobreposta($grade)
-    $cobLbl = [UiTest]::AcimaSobreposta($lbl)
-    $cobValor = [UiTest]::AcimaSobreposta($valor)
-    Check $Rotulo (($grade -ne [IntPtr]::Zero) -and ($lbl -ne [IntPtr]::Zero) -and
-        ($valor -ne [IntPtr]::Zero) -and ($cobGrade -eq '') -and ($cobLbl -eq '') -and
-        ($cobValor -eq '')) (
-        'grade=' + $grade + ' cobrindo=' + $cobGrade +
-        ' rotulo=' + $lbl + ' cobrindo=' + $cobLbl +
-        ' valor=' + $valor + ' cobrindo=' + $cobValor)
+    Check $Rotulo $ok $det
 }
 
 # Acha o painel inferior com o botao "Voltar" entre as janelas NOVAS (em
@@ -1954,8 +1966,15 @@ try {
                     'janelas=' + $visNovo.Count)
                 # gridTrans nasce oculta no .lfm e e' do form (alClient):
                 # sem esta revelacao a tela de extratos ficaria sem grade.
-                Check 'gridTrans exibida apos o miNew' (
-                    Test-GridVisivel $mainNovo)
+                # A revelacao vem em duas passadas (AtualizarEstadoDatabase
+                # esconde, IrParaTelaExtratos revela de novo), entao o
+                # snapshot pode cair no meio: espera ate' 5 s a grade aparecer.
+                $gradeNovo = $false
+                for ($tNovo = 0; ($tNovo -lt 20) -and (-not $gradeNovo); $tNovo++) {
+                    $gradeNovo = Test-GridVisivel $mainNovo
+                    if (-not $gradeNovo) { Start-Sleep -Milliseconds 250 }
+                }
+                Check 'gridTrans exibida apos o miNew' ($gradeNovo)
                 # ... e ACIMA das guias, junto com os textos do saldo
                 # anterior: sem isso a revelacao da pagina deixa a
                 # PageControl1 por cima e a tela aparece sem grade nenhuma e
