@@ -220,6 +220,11 @@ type
     // recalcula pelo saldo do ano, em vez de só restaurar este estado).
     FSavedTabVisible: array of Boolean;
     FInListView: Boolean;
+    // Guia de cada mês da tela de extratos (1 = tbJan ... 12 = tbDez): este
+    // array é a tradutora mês<->guia, e não mais duas listas de doze braços
+    // (o case de AbaDoMes e o if-chain de MesDaAba). Preenchido no FormCreate,
+    // antes de qualquer troca de página.
+    FMeses: array[1..12] of TTabSheet;
     // Título da tela normal (mês) antes de entrar na lista de bancos
     FSavedTitle: String;
     // Valor do tsAnterior (a abertura do mês ativo) guardado como NÚMERO. É
@@ -336,6 +341,24 @@ type
     // "contas" e o combo só existe na tela de extratos, então sem remontar
     // aqui a troca só aparece no próximo miNew/miOpen/miImport.
     procedure AtualizarComboContas;
+    // ---- Helpers compartilhados pelos fluxos (implementação no topo do .pas)
+    // Conta/ano escolhidos nas combos: o combo carrega o id em Items.Objects,
+    // e ItemIndex fora de faixa é o estado da combo vazia (-1).
+    function IdContaSelecionada: Integer;
+    // A mesma conta virando condição de WHERE (vazia quando não há conta).
+    function CondicaoConta: string;
+    function AnoSelecionado: Integer;
+    // ' AND ' entre condições de um WHERE em montagem, só quando necessário.
+    procedure AcrescentarCondicao(var ACondicao: string; const ANova: string);
+    // Consulta própria na conexão das grades (o chamador é quem libera).
+    function NovaConsulta: TSQLQuery;
+    // Fecha as três queries da tela antes de uma gravação.
+    procedure FecharQueriesContas;
+    // Caminho relativo do diálogo de arquivo vira caminho na pasta inicial.
+    function CaminhoAbsoluto(const AArquivo, APastaInicial: string): string;
+    // Refaz combos, guias e grades depois de gravar, devolvendo conta/ano.
+    procedure RecarregarTelaAposGravacao(const AContaTexto, AAnoTexto: string;
+      AIrParaExtratos: Boolean);
     // Lista de bancos de tbBancos (SQLQueryBanks, aberta desde a abertura do
     // programa) no formato "nome=id": alimenta o combo da coluna "Banco" e
     // as traduções id<->nome. Percorre a query guardando e devolvendo a
@@ -354,33 +377,135 @@ var
 implementation
 
 uses
-  unitDatabase, unitOfx;
+  unitDatabase, unitOfx, unitMoneyFormatos;
 
 {$R *.lfm}
 
 { TFormMoney }
 
-// "1 registro" / "2 registros": evita "registro(s)" na mensagem de resultado.
-function Plural(AN: Integer; const ASingular, APlural: string): string;
+// ---- Helpers compartilhados pelos fluxos da tela -------------------------------------------
+// (conta e ano escolhidos nas combos, consulta própria na conexão das
+// grades, fechar/religar as queries antes e depois de gravar). Estavam
+// escritos à mão em cada lugar: o id da conta do cbAccount aparecia DEZ vezes
+// como Integer(PtrInt(cbAccount.Items.Objects[ItemIndex])), com a checagem de
+// faixa do lado, e o bloco "gravou, refaz a tela" era copiado três vezes.
+// Agora cada regra existe uma vez só. As conversões de dinheiro, de data e o
+// Plural foram para unitMoneyFormatos (funções puras, sem nada do form).
+
+// Conta escolhida no cbAccount: o combo guarda o id de "contas" em
+// Items.Objects (PtrInt, porque o id é numérico e cabe em endereço). -1
+// quando não há conta selecionada - é o estado da combo vazia, sem contas
+// cadastradas, e nela o filtro não restringe nada.
+function TFormMoney.IdContaSelecionada: Integer;
 begin
-  if AN = 1 then
-    Result := ASingular
-  else
-    Result := APlural;
+  Result := -1;
+  if (cbAccount.ItemIndex >= 0) and (cbAccount.ItemIndex < cbAccount.Items.Count)
+  then
+    Result := Integer(PtrInt(cbAccount.Items.Objects[cbAccount.ItemIndex]));
 end;
 
-// Número virando literal de SQL: o separador decimal é SEMPRE ponto, porque o
-// SQL não entende vírgula - e o DefaultFormatSettings do programa é o do
-// sistema, que aqui é português (vírgula). FloatToStr com formato próprio
-// cobre isso; o valor é Double puro, então não há o que injetar.
-function SqlNumero(valor: Double): string;
+// A MESMA conta virando parte de um WHERE: 'account_id = N', ou a cadeia
+// vazia quando não há conta selecionada - a mesma regra de combo vazia não
+// restringe, compartilhada pelo filtro de extratos e pelo de saldos.
+function TFormMoney.CondicaoConta: string;
 var
-  formatos: TFormatSettings;
+  idConta: Integer;
 begin
-  formatos := DefaultFormatSettings;
-  formatos.DecimalSeparator := '.';
-  formatos.ThousandSeparator := #0;
-  Result := FloatToStr(valor, formatos);
+  Result := '';
+  idConta := IdContaSelecionada;
+  if idConta >= 0 then
+    Result := 'account_id = ' + IntToStr(idConta);
+end;
+
+// Ano escolhido no cbYear: -1 quando não há ano nenhum (combo vazia - é o
+// estado depois de um fechar, e o da lista vazia de "saldos"). O critério dos
+// "4 dígitos" é o MESMO do preenchimento do combo: qualquer outra coisa nessa
+// posição não é ano para ninguém.
+function TFormMoney.AnoSelecionado: Integer;
+begin
+  Result := -1;
+  if (cbYear.ItemIndex >= 0) and (cbYear.ItemIndex < cbYear.Items.Count) then
+    Result := StrToIntDef(Trim(cbYear.Items[cbYear.ItemIndex]), -1);
+end;
+
+// Acrescenta uma condição a um WHERE em montagem, colocando o AND na frente
+// só quando já havia algo - era o `if condicao <> '' then condicao :=
+// condicao + ' AND '` que cada filtro novo tinha de lembrar de repetir.
+procedure TFormMoney.AcrescentarCondicao(var ACondicao: string;
+  const ANova: string);
+begin
+  if ANova = '' then
+    Exit;
+  if ACondicao <> '' then
+    ACondicao := ACondicao + ' AND ';
+  ACondicao := ACondicao + ANova;
+end;
+
+// Consulta própria na MESMA conexão das grades: Database e Transaction
+// juntos, como o SQLDB exige (sem a transação a consulta não sabe onde
+// entrar). Não mexe no cursor de nenhuma grade - é o motivo de existir, já
+// que percorrer a query da grade derrubaria a linha que estiver em edição e
+// moveria o registro selecionado. O chamador é quem libera.
+function TFormMoney.NovaConsulta: TSQLQuery;
+begin
+  Result := TSQLQuery.Create(nil);
+  Result.Database := SQLite3ConnContas;
+  Result.Transaction := SQLTransactionContas;
+end;
+
+// As três queries da tela fecham antes de qualquer GRAVAÇÃO: o commit não
+// pode encontrar sentença em andamento (o SQLite recusa o commit nesse caso).
+// Quem grava é quem reabre, junto com o recarregar da tela abaixo.
+procedure TFormMoney.FecharQueriesContas;
+begin
+  SQLQueryContas.Close;
+  SQLQueryExtratos.Close;
+  SQLQuerySaldos.Close;
+end;
+
+// Caminho relativo (sem pasta) fica na pasta inicial do diálogo, para o
+// arquivo não cair no diretório de trabalho corrente da aplicação - a mesma
+// regra dos cinco diálogos de arquivo (abrir, salvar, importar, exportar e
+// novo database).
+function TFormMoney.CaminhoAbsoluto(const AArquivo, APastaInicial: string
+  ): string;
+begin
+  Result := AArquivo;
+  if ExtractFilePath(Result) = '' then
+    Result := IncludeTrailingPathDelimiter(APastaInicial) + Result;
+end;
+
+// Recarrega combos, guias e as duas grades depois de uma GRAVAÇÃO, e devolve
+// o usuário para a conta e o ano que ele estava olhando (a recarga das combos
+// começa sempre no primeiro item, então as escolhas são devolvidas por
+// texto). AIrParaExtratos cobre o importar/excluir: essas telas também caem
+// na tela de extratos, que é onde as linhas aparecem. Compartilhado pelo
+// miImport, pelo miImpTrans e pelo "Excluir Mês" - e o miNew/miOpen usam a
+// mesma sequência de filtros, sem a devolução de escolhas (ali não havia
+// escolha a devolver).
+procedure TFormMoney.RecarregarTelaAposGravacao(const AContaTexto,
+  AAnoTexto: string; AIrParaExtratos: Boolean);
+var
+  indice: Integer;
+begin
+  if not SQLQueryContas.Active then
+    SQLQueryContas.Open;
+  // A lista de anos vem de "saldos", que a gravação acabou de mexer, e a de
+  // contas de "contas"; as duas combos são remontadas vazias por Carregar-
+  // FiltrosExtratos e recebem de volta a escolha logo abaixo.
+  CarregarFiltrosExtratos;
+  indice := cbAccount.Items.IndexOf(AContaTexto);
+  if indice >= 0 then
+    cbAccount.ItemIndex := indice;
+  indice := cbYear.Items.IndexOf(AAnoTexto);
+  if indice >= 0 then
+    cbYear.ItemIndex := indice;
+  // As duas grades reabrem já filtradas: a de extratos mostra o que acabou
+  // de entrar, e a de saldos acompanha a mesma conta.
+  AplicarFiltroExtratos;
+  AplicarFiltroSaldos;
+  if AIrParaExtratos then
+    IrParaTelaExtratos;
 end;
 
 procedure TFormMoney.cbAccountChange(Sender: TObject);
@@ -420,6 +545,20 @@ begin
   // Captura o título ANTES de qualquer OnChange: a troca de página usa
   // FSavedTitle para restaurar lblTitle.
   FSavedTitle := lblTitle.Caption;
+  // A tradutora mês<->guia é montada aqui, ANTES de qualquer troca de página:
+  // PageControl1Change, chamado logo abaixo, já consulta MesDaAba.
+  FMeses[1] := tbJan;
+  FMeses[2] := tbFev;
+  FMeses[3] := tbMar;
+  FMeses[4] := tbAbr;
+  FMeses[5] := tbMai;
+  FMeses[6] := tbJun;
+  FMeses[7] := tbJul;
+  FMeses[8] := tbAgo;
+  FMeses[9] := tbSet;
+  FMeses[10] := tbOut;
+  FMeses[11] := tbNov;
+  FMeses[12] := tbDez;
   // ActivePage no .lfm é apenas a página que estava selecionada no designer e
   // muda a cada salvamento (já foi tbJan, tbSaldos e tbBancos). Fixando aqui a
   // tela de entrada, a aplicação nunca inicializa na lista de bancos.
@@ -608,15 +747,12 @@ begin
   // Guarda a escolha antes de esvaziar. Na montagem dos filtros a combo já
   // veio vazia do chamador, então não há o que guardar e vale a primeira
   // conta — comportamento do miNew/miOpen, do qual os testes dependem.
-  idEscolhido := -1;
-  if (cbAccount.ItemIndex >= 0) and (cbAccount.ItemIndex < cbAccount.Items.Count) then
-    idEscolhido := Integer(PtrInt(cbAccount.Items.Objects[cbAccount.ItemIndex]));
+  // (IdContaSelecionada devolve -1 justamente nesse caso da combo vazia.)
+  idEscolhido := IdContaSelecionada;
 
   cbAccount.Items.Clear;
-  consulta := TSQLQuery.Create(nil);
+  consulta := NovaConsulta;
   try
-    consulta.Database := SQLite3ConnContas;
-    consulta.Transaction := SQLTransactionContas;
     // hidden = 1 e' a conta fora do filtro: ela continua GRAVADA (os extratos
     // e os saldos dela nao somem), mas nao aparece no combo - o cbAccount e' o
     // filtro da tela de extratos, nao a lista de cadastro (a grade de tbContas
@@ -692,10 +828,8 @@ begin
   // os dois conjuntos de anos divergirem, vale o que o combo listar.
   // Só entra ano de verdade (4 dígitos): enddate é texto, qualquer outra
   // coisa nessa posição não é ano para ninguém.
-  consulta := TSQLQuery.Create(nil);
+  consulta := NovaConsulta;
   try
-    consulta.Database := SQLite3ConnContas;
-    consulta.Transaction := SQLTransactionContas;
     consulta.SQL.Text :=
       'SELECT DISTINCT substr(enddate, 1, 4) FROM saldos' +
       ' ORDER BY substr(enddate, 1, 4) DESC;';
@@ -729,62 +863,38 @@ begin
   AplicarFiltroExtratos;
 end;
 
-// Guia de mês da tela de extratos: 1 = tbJan ... 12 = tbDez. Os nomes não
-// seguem padrão (tbFev, tbAbr...), então o case é o tradutor - e ele também
-// protege o chamador de um mês vindo fora do intervalo (devolve nil).
+// Guia de mês da tela de extratos: 1 = tbJan ... 12 = tbDez, pelo array
+// FMeses montado no FormCreate - a tradução é UMA só (a de antes tinha um
+// case de doze braços aqui e um if-chain de doze do outro lado, com o mesmo
+// conteúdo escrito duas vezes). Protege o chamador de um mês vindo fora do
+// intervalo: devolve nil, como antes.
 function TFormMoney.AbaDoMes(AMes: Integer): TTabSheet;
 begin
-  case AMes of
-    1: Result := tbJan;
-    2: Result := tbFev;
-    3: Result := tbMar;
-    4: Result := tbAbr;
-    5: Result := tbMai;
-    6: Result := tbJun;
-    7: Result := tbJul;
-    8: Result := tbAgo;
-    9: Result := tbSet;
-    10: Result := tbOut;
-    11: Result := tbNov;
-    12: Result := tbDez;
+  if (AMes >= 1) and (AMes <= 12) then
+    Result := FMeses[AMes]
   else
     Result := nil;
-  end;
 end;
 
 // Tradutor inverso de AbaDoMes: a aba ATIVA é quem diz qual mês a grade de
 // extratos mostra (o pedido: ano do cbYear + mês da guia ativa). Devolve 0
 // para o que não é guia de mês - as telas de gestão, onde a grade fica
-// escondida e não há mês a filtrar. Os comparadores são objetos (TTabSheet
-// não é ordinal), então não há case aqui: a cadeia é a tradução direta.
+// escondida e não há mês a filtrar - e também para guia nula, que é o estado
+// da página sem guia ativa. Os comparadores são objetos (TTabSheet não é
+// ordinal), então a procura é linha a linha no array.
 function TFormMoney.MesDaAba(ATab: TTabSheet): Integer;
+var
+  i: Integer;
 begin
-  if ATab = tbJan then
-    Result := 1
-  else if ATab = tbFev then
-    Result := 2
-  else if ATab = tbMar then
-    Result := 3
-  else if ATab = tbAbr then
-    Result := 4
-  else if ATab = tbMai then
-    Result := 5
-  else if ATab = tbJun then
-    Result := 6
-  else if ATab = tbJul then
-    Result := 7
-  else if ATab = tbAgo then
-    Result := 8
-  else if ATab = tbSet then
-    Result := 9
-  else if ATab = tbOut then
-    Result := 10
-  else if ATab = tbNov then
-    Result := 11
-  else if ATab = tbDez then
-    Result := 12
-  else
-    Result := 0;
+  Result := 0;
+  if ATab = nil then
+    Exit;
+  for i := 1 to 12 do
+    if FMeses[i] = ATab then
+    begin
+      Result := i;
+      Break;
+    end;
 end;
 
 function TFormMoney.PodeExcluirMes: Boolean;
@@ -811,7 +921,7 @@ end;
 // que define "hoje" quando o database abre e quando o ano muda.
 procedure TFormMoney.AtualizarAbasMes;
 var
-  i, ano, mes, ultimoMes, mesLancado, mesAbertura: Integer;
+  i, ano, mes, ultimoMes, mesLancado, mesAbertura, idConta: Integer;
   condicao: string;
   temMes: array[1..12] of Boolean;
   consulta: TSQLQuery;
@@ -837,12 +947,10 @@ begin
      (PageControl1.ActivePage = tbSaldos) then
     Exit;
 
-  // Ano do combo, com o mesmo critério de "4 dígitos" do preenchimento dele:
-  // sem ano escolhido (combo vazia) não há mês para mostrar. Database já
-  // conferido no início do procedimento.
-  ano := -1;
-  if (cbYear.ItemIndex >= 0) and (cbYear.ItemIndex < cbYear.Items.Count) then
-    ano := StrToIntDef(Trim(cbYear.Items[cbYear.ItemIndex]), -1);
+  // Ano do combo (AnoSelecionado aplica o mesmo critério de "4 dígitos" do
+  // preenchimento dele): sem ano escolhido (combo vazia) não há mês para
+  // mostrar. Database já conferido no início do procedimento.
+  ano := AnoSelecionado;
 
   mesLancado := 0;
   if ano >= 0 then
@@ -850,10 +958,8 @@ begin
     // Consulta própria na mesma conexão (mesmo caminho do ano do cbYear):
     // meses do ano escolhido, direto de enddate. enddate é texto ISO, então
     // o mês são os caracteres 6..7 ("2026-03-31" -> "03").
-    consulta := TSQLQuery.Create(nil);
+    consulta := NovaConsulta;
     try
-      consulta.Database := SQLite3ConnContas;
-      consulta.Transaction := SQLTransactionContas;
       consulta.SQL.Text :=
         'SELECT DISTINCT substr(enddate, 6, 2) FROM saldos' +
         ' WHERE substr(enddate, 1, 4) = ' + QuotedStr(IntToStr(ano)) + ';';
@@ -876,11 +982,10 @@ begin
       // "YYYYMMDD"), então o mês sai do MESMO CASE do filtro - e o ORDER BY
       // compara o ANO-MES já normalizado: em texto puro "2025-12" vem depois
       // de "202512", então o formatado não pode competir com o cru.
+      idConta := IdContaSelecionada;
       condicao := '';
-      if (cbAccount.ItemIndex >= 0) and
-         (cbAccount.ItemIndex < cbAccount.Items.Count) then
-        condicao := ' AND account_id = ' + IntToStr(
-          Integer(PtrInt(cbAccount.Items.Objects[cbAccount.ItemIndex])));
+      if idConta >= 0 then
+        condicao := ' AND account_id = ' + IntToStr(idConta);
       consulta.SQL.Text :=
         'SELECT CASE WHEN substr(dtposted, 5, 1) = ''-'' THEN' +
         ' substr(dtposted, 6, 2) ELSE substr(dtposted, 5, 2) END' +
@@ -951,7 +1056,7 @@ end;
 procedure TFormMoney.AplicarFiltroExtratos;
 var
   sql, condicao: string;
-  idConta, ano, mes: Integer;
+  ano, mes: Integer;
 begin
   // Sem database aberto não há o que filtrar: é o caminho do OnChange que a
   // limpeza das combos dispara ao fechar o arquivo.
@@ -961,11 +1066,7 @@ begin
   condicao := '';
   // Conta: o combo carrega o "id" de "contas" em Items.Objects. Combo vazia
   // (nenhuma conta cadastrada) não restringe e valem todas as contas.
-  if (cbAccount.ItemIndex >= 0) and (cbAccount.ItemIndex < cbAccount.Items.Count) then
-  begin
-    idConta := Integer(PtrInt(cbAccount.Items.Objects[cbAccount.ItemIndex]));
-    condicao := 'account_id = ' + IntToStr(idConta);
-  end;
+  AcrescentarCondicao(condicao, CondicaoConta);
 
   // Período = ano + mês: o ano vem do cbYear e o mês da aba ativa (guia
   // JAN..DEZ) - são as duas coisas que definem a tela de extratos. dtposted
@@ -973,35 +1074,24 @@ begin
   // que também batem no formato OFX (YYYYMMDD...). O valor é validado como
   // número antes de entrar na query e a comparação é contra texto, para o
   // SQLite não trocar de tipo no meio da expressão.
-  if (cbYear.ItemIndex >= 0) and (cbYear.ItemIndex < cbYear.Items.Count) then
-  begin
-    ano := StrToIntDef(Trim(cbYear.Items[cbYear.ItemIndex]), -1);
-    if ano >= 0 then
-    begin
-      if condicao <> '' then
-        condicao := condicao + ' AND ';
-      condicao := condicao + 'substr(dtposted, 1, 4) = ' +
-        QuotedStr(IntToStr(ano));
-    end;
-  end;
+  ano := AnoSelecionado;
+  if ano >= 0 then
+    AcrescentarCondicao(condicao, 'substr(dtposted, 1, 4) = ' +
+      QuotedStr(IntToStr(ano)));
 
   // Mês = guia ativa (MesDaAba devolve 0 fora das guias de mês: as telas de
   // gestão, onde a grade está escondida e não há mês a filtrar). O mês não
   // fica na mesma posição nos dois formatos de dtposted: em YYYY-MM-DD são
   // os caracteres 6..7 e em YYYYMMDD são os 5..6 - o '-' na posição 5 é o
-  // que separa os casos (é o mesmo critério do ExtratoDtpostedGetText, que
-  // formata a coluna da grade). O mês é comparado como texto de 2 dígitos
-  // ('01'..'12'), que é o que substr devolve.
+  // que separa os casos (é o mesmo critério do DataExibicao, que formata a
+  // coluna da grade). O mês é comparado como texto de 2 dígitos ('01'..'12'),
+  // que é o que substr devolve.
   mes := MesDaAba(PageControl1.ActivePage);
   if mes > 0 then
-  begin
-    if condicao <> '' then
-      condicao := condicao + ' AND ';
-    condicao := condicao +
+    AcrescentarCondicao(condicao,
       '(CASE WHEN substr(dtposted, 5, 1) = ''-'' THEN substr(dtposted, 6, 2)' +
       ' ELSE substr(dtposted, 5, 2) END) = ' +
-      QuotedStr(Format('%.2d', [mes]));
-  end;
+      QuotedStr(Format('%.2d', [mes])));
 
   // A abertura do mês (o valor do tsAnterior) é também a SEMENTE da coluna
   // Saldo da grade: o SQLite soma o trnamt linha a linha a partir dela
@@ -1060,9 +1150,7 @@ end;
 function TFormMoney.PeriodoExtratos(out ano, mes: Integer): Boolean;
 begin
   mes := MesDaAba(PageControl1.ActivePage);
-  ano := -1;
-  if (cbYear.ItemIndex >= 0) and (cbYear.ItemIndex < cbYear.Items.Count) then
-    ano := StrToIntDef(Trim(cbYear.Items[cbYear.ItemIndex]), -1);
+  ano := AnoSelecionado;
   Result := DatabaseAberto and (mes > 0) and (ano >= 0);
 end;
 
@@ -1086,15 +1174,11 @@ begin
   Result := 0;
 
   condConta := '';
-  if (cbAccount.ItemIndex >= 0) and (cbAccount.ItemIndex < cbAccount.Items.Count)
-  then
-    condConta := ' AND account_id = ' + IntToStr(
-      Integer(PtrInt(cbAccount.Items.Objects[cbAccount.ItemIndex])));
+  if IdContaSelecionada >= 0 then
+    condConta := ' AND ' + CondicaoConta;
 
-  consulta := TSQLQuery.Create(nil);
+  consulta := NovaConsulta;
   try
-    consulta.Database := SQLite3ConnContas;
-    consulta.Transaction := SQLTransactionContas;
     consulta.SQL.Text := 'SELECT CAST(balance AS REAL) FROM saldos WHERE ' +
       CondicaoPeriodo + condConta + ' ORDER BY enddate DESC, id DESC LIMIT 1;';
     consulta.Open;
@@ -1116,22 +1200,16 @@ end;
 // grudado no campo. Campo é TControl porque os dois exibidores são disso
 // para baixo: o tsAnterior (TStaticText) e o txtSaldo (TLabel).
 procedure TFormMoney.ExibirSaldo(Campo: TControl; valor: Double);
-var
-  formatos: TFormatSettings;
 begin
-  formatos := DefaultFormatSettings;
-  formatos.DecimalSeparator := ',';
-  formatos.ThousandSeparator := '.';
+  // A cor é daqui: só o negativo é vermelho e o positivo volta para a cor do
+  // próprio campo (os DOIS caminhos religam de propósito - sem isso, depois
+  // de um saldo negativo o vermelho ficaria grudado no campo). O TEXTO é o
+  // mesmo par C/D da grade, em ValorCD.
   if valor >= 0 then
-  begin
-    Campo.Font.Color := clDefault;
-    Campo.Caption := FormatFloat('#,##0.00', valor, formatos) + ' C';
-  end
+    Campo.Font.Color := clDefault
   else
-  begin
     Campo.Font.Color := clRed;
-    Campo.Caption := FormatFloat('#,##0.00', -valor, formatos) + ' D';
-  end;
+  Campo.Caption := ValorCD(valor);
 end;
 
 // O tsAnterior mostra o balance do saldo imediatamente anterior ao mês ativo
@@ -1185,17 +1263,13 @@ end;
 procedure TFormMoney.AplicarFiltroSaldos;
 var
   sql, condicao: string;
-  idConta: Integer;
 begin
   if not DatabaseAberto then
     Exit;
 
-  condicao := '';
-  if (cbAccount.ItemIndex >= 0) and (cbAccount.ItemIndex < cbAccount.Items.Count) then
-  begin
-    idConta := Integer(PtrInt(cbAccount.Items.Objects[cbAccount.ItemIndex]));
-    condicao := ' WHERE account_id = ' + IntToStr(idConta);
-  end;
+  condicao := CondicaoConta;
+  if condicao <> '' then
+    condicao := ' WHERE ' + condicao;
 
   // O CAST do balance é o mesmo motivo do CAST do trnamt na grade de
   // extratos: "NUMERIC" sem precisão o driver SQLite tipa como
@@ -1233,18 +1307,13 @@ end;
 // para editar sem transformar a data em lixo.
 procedure TFormMoney.ExtratoDtpostedGetText(Sender: TField; var AText: string;
   DisplayText: Boolean);
-var
-  data: string;
 begin
-  data := Sender.AsString;
+  // A tradução dos DOIS formatos de dtposted (ISO e o AAAAMMDD do OFX) mora
+  // em DataExibicao, junto com a do enddate dos saldos.
   if DisplayText then
-  begin
-    if (Length(data) = 8) and (StrToIntDef(data, -1) >= 0) then
-      data := Copy(data, 7, 2) + '/' + Copy(data, 5, 2) + '/' + Copy(data, 1, 4)
-    else if (Length(data) = 10) and (data[5] = '-') and (data[8] = '-') then
-      data := Copy(data, 9, 2) + '/' + Copy(data, 6, 2) + '/' + Copy(data, 1, 4);
-  end;
-  AText := data;
+    AText := DataExibicao(Sender.AsString)
+  else
+    AText := Sender.AsString;
 end;
 
 // memo e chknum são TEXT, que o SQLite entrega como ftMemo: a grade sem
@@ -1268,9 +1337,6 @@ end;
 // não há editor, que é justamente o ReadOnly do PrepararCamposExtratos.
 procedure TFormMoney.ExtratoTrnAmtGetText(Sender: TField; var AText: string;
   DisplayText: Boolean);
-var
-  formatos: TFormatSettings;
-  valor: Double;
 begin
   if not DisplayText then
   begin
@@ -1282,14 +1348,9 @@ begin
     AText := '';
     Exit;
   end;
-  valor := Sender.AsFloat;
-  formatos := DefaultFormatSettings;
-  formatos.DecimalSeparator := ',';
-  formatos.ThousandSeparator := '.';
-  if valor >= 0 then
-    AText := FormatFloat('#,##0.00', valor, formatos) + ' C'
-  else
-    AText := FormatFloat('#,##0.00', -valor, formatos) + ' D';
+  // O par C/D (a letra no lugar do sinal, valor absoluto, duas casas e
+  // vírgula) é o mesmo do tsAnterior e do txtSaldo: mora em ValorCD.
+  AText := ValorCD(Sender.AsFloat);
 end;
 
 // Mostra o nome do banco no lugar do id, tanto na exibição (DisplayText=True)
@@ -1393,11 +1454,9 @@ procedure TFormMoney.SQLQuerySaldosNewRecord(DataSet: TDataSet);
 var
   idConta: Integer;
 begin
-  if (cbAccount.ItemIndex >= 0) and (cbAccount.ItemIndex < cbAccount.Items.Count) then
-  begin
-    idConta := Integer(PtrInt(cbAccount.Items.Objects[cbAccount.ItemIndex]));
+  idConta := IdContaSelecionada;
+  if idConta >= 0 then
     DataSet.FieldByName('account_id').AsInteger := idConta;
-  end;
 end;
 
 // Preenche o combo da coluna "Banco" com os nomes atuais de tbBancos. O
@@ -1553,13 +1612,11 @@ end;
 // muda: é o OnSetText que converte de volta.
 procedure TFormMoney.SaldosEnddateGetText(Sender: TField; var AText: string;
   DisplayText: Boolean);
-var
-  data: string;
 begin
-  data := Sender.AsString;
-  if (Length(data) = 10) and (data[5] = '-') and (data[8] = '-') then
-    data := Copy(data, 9, 2) + '/' + Copy(data, 6, 2) + '/' + Copy(data, 1, 4);
-  AText := data;
+  // enddate é ISO (AAAA-MM-DD, o formato que o próprio form grava, e o único
+  // que os filtros e as guias sabem ler): a tradução é a MESMA do dtposted
+  // dos extratos, em DataExibicao, e texto que não é data volta intacto.
+  AText := DataExibicao(Sender.AsString);
 end;
 
 // Aceita o que a máscara produz (DD/MM/AAAA) e também o formato gravado
@@ -1567,26 +1624,20 @@ end;
 // fica como estava, sem inventar conversão.
 procedure TFormMoney.SaldosEnddateSetText(Sender: TField; const AText: string);
 var
-  data: string;
-  dataGravada: TDateTime;
+  iso: string;
 begin
-  data := Trim(AText);
-  if data = '' then
+  if Trim(AText) = '' then
   begin
     // enddate é NOT NULL: vazio vira texto vazio, que o SQLite aceita.
     Sender.AsString := '';
     Exit;
   end;
-  if (Length(data) = 10) and (data[3] = '/') and (data[6] = '/') and
-     TryEncodeDate(StrToIntDef(Copy(data, 7, 4), 0),
-       StrToIntDef(Copy(data, 4, 2), 0), StrToIntDef(Copy(data, 1, 2), 0),
-       dataGravada) then
-    Sender.AsString := FormatDateTime('yyyy-mm-dd', dataGravada)
-  else if (Length(data) = 10) and (data[5] = '-') and (data[8] = '-') and
-     TryEncodeDate(StrToIntDef(Copy(data, 1, 4), 0),
-       StrToIntDef(Copy(data, 6, 2), 0), StrToIntDef(Copy(data, 9, 2), 0),
-       dataGravada) then
-    Sender.AsString := FormatDateTime('yyyy-mm-dd', dataGravada);
+  // DataISO aceita o que a máscara entrega (DD/MM/AAAA) e também o formato
+  // gravado (AAAA-MM-DD, para colar de fora), validando a data de verdade
+  // (31/02 não passa). False = não é data: o valor fica como estava, sem
+  // inventar conversão.
+  if DataISO(AText, iso) then
+    Sender.AsString := iso;
 end;
 
 // balance é numérico: DUAS casas sempre, vírgula decimal, separador de milhar
@@ -1598,8 +1649,6 @@ end;
 // editor da grade abre - o gravado não muda com a formatação.
 procedure TFormMoney.SaldosBalanceGetText(Sender: TField; var AText: string;
   DisplayText: Boolean);
-var
-  formatos: TFormatSettings;
 begin
   if not DisplayText then
   begin
@@ -1611,10 +1660,10 @@ begin
     AText := '';
     Exit;
   end;
-  formatos := DefaultFormatSettings;
-  formatos.DecimalSeparator := ',';
-  formatos.ThousandSeparator := '.';
-  AText := FormatFloat('#,##0.00', Sender.AsFloat, formatos);
+  // Duas casas, vírgula decimal e milhar no ponto: o MESMO texto de antes,
+  // agora em FormatarDinheiro - que é de onde o ValorCD da grade de extratos
+  // também tira o número.
+  AText := FormatarDinheiro(Sender.AsFloat);
 end;
 
 // Gravação da célula: o DBGrid faz Field.Text := texto do editor e o
@@ -1692,9 +1741,7 @@ begin
   // afetado: ele abre na inicialização e sustenta a lista de bancos.
   // Sempre dá para fechar duas vezes: fechar algo já fechado é só no-op.
   try
-    SQLQueryContas.Close;
-    SQLQueryExtratos.Close;
-    SQLQuerySaldos.Close;
+    FecharQueriesContas;
     SQLite3ConnContas.Close;
   except
     on E: Exception do
@@ -1736,20 +1783,19 @@ var
   acctidArquivo, acctidConta: string;
   registros: TRegistrosOfx;
   consulta: TSQLQuery;
-  ignorados, novos, jaExistiam, contaId, indice: Integer;
+  ignorados, novos, jaExistiam, contaId: Integer;
 begin
   // Cada linha de "extratos" aponta para uma conta (account_id NOT NULL),
   // entao sem conta escolhida nao ha para onde gravar. O menu "Transacoes"
   // ja' nasce desativado sem database aberto, entao nao falta checar isso.
-  if (cbAccount.ItemIndex < 0) or (cbAccount.ItemIndex >= cbAccount.Items.Count)
-  then
+  contaId := IdContaSelecionada;
+  if contaId < 0 then
   begin
     MessageDlg('Cadastre uma conta antes de importar o extrato.' + LineEnding +
       'Cada linha de "extratos" pertence a uma conta da aba ' +
       '"Gerenciar Contas".', mtWarning, [mbOK], 0);
     Exit;
   end;
-  contaId := Integer(PtrInt(cbAccount.Items.Objects[cbAccount.ItemIndex]));
   // A recarga das combos no fim comeca sempre no primeiro item: guarda as
   // duas escolhas para devolver o usuario para onde ele estava.
   contaTexto := cbAccount.Text;
@@ -1759,11 +1805,9 @@ begin
   if not dlgImportar.Execute then
     Exit; // usuario cancelou
 
-  caminho := dlgImportar.FileName;
-  // Caminho relativo (sem pasta) fica na pasta inicial do dialogo, para o
-  // arquivo nao cair no diretorio de trabalho corrente da aplicacao.
-  if ExtractFilePath(caminho) = '' then
-    caminho := IncludeTrailingPathDelimiter(dlgImportar.InitialDir) + caminho;
+  // Caminho relativo (sem pasta) fica na pasta inicial do dialogo - a mesma
+  // regra dos outros quatro dialogos de arquivo, em CaminhoAbsoluto.
+  caminho := CaminhoAbsoluto(dlgImportar.FileName, dlgImportar.InitialDir);
 
   // Le o arquivo ANTES de mexer no database: falha de leitura nao grava nada.
   // A conta de origem (<ACCTID>) vem da mesma leitura - e' ela que confere se
@@ -1797,10 +1841,8 @@ begin
   acctidConta := '';
   if acctidArquivo <> '' then
   begin
-    consulta := TSQLQuery.Create(nil);
+    consulta := NovaConsulta;
     try
-      consulta.Database := SQLite3ConnContas;
-      consulta.Transaction := SQLTransactionContas;
       consulta.SQL.Text := 'SELECT acctid FROM contas WHERE id = ' +
         IntToStr(contaId) + ';';
       consulta.Open;
@@ -1829,9 +1871,7 @@ begin
   // miNew/miOpen - e vale mesmo quando a importacao falha no meio.
   try
     try
-      SQLQueryContas.Close;
-      SQLQuerySaldos.Close;
-      SQLQueryExtratos.Close;
+      FecharQueriesContas;
       novos := ImportarExtratos(SQLite3ConnContas, contaId, registros,
         jaExistiam);
     except
@@ -1841,27 +1881,13 @@ begin
     end;
   finally
     try
-      if not SQLQueryContas.Active then
-        SQLQueryContas.Open;
-      // Recarrega as combos - a lista de anos vem de saldos e a importacao
-      // GRAVA um saldo por mes (o balanco acumulado ate' o fim de cada mes),
-      // entao o ano do fim do arquivo pode aparecer aqui. A conta e o ano
-      // escolhidos sao devolvidos depois do recarregar, e reabre as queries
-      // das duas grades ja' filtradas (extratos e saldos) - e' a grade de
-      // extratos que mostra o que acabou de entrar.
-      CarregarFiltrosExtratos;
-      indice := cbAccount.Items.IndexOf(contaTexto);
-      if indice >= 0 then
-        cbAccount.ItemIndex := indice;
-      indice := cbYear.Items.IndexOf(anoTexto);
-      if indice >= 0 then
-        cbYear.ItemIndex := indice;
-      AplicarFiltroExtratos;
-      AplicarFiltroSaldos;
-      // Importar também cai na tela de extratos (mesmo caminho do
-      // abrir/criar): é lá que as linhas novas aparecem. Sem navegar, quem
-      // importou de uma tela de gestão ficava lá, sem ver nada do que entrou.
-      IrParaTelaExtratos;
+      // Recarrega as combos (a lista de anos vem de saldos e a importacao
+      // GRAVA um saldo por mes - o balanco acumulado ate' o fim de cada mes -,
+      // entao o ano do fim do arquivo pode aparecer aqui), devolve a conta e
+      // o ano que o usuario tinha escolhido, reabre as duas grades ja'
+      // filtradas e cai na tela de extratos (sem navegar, quem importou de
+      // uma tela de gestao ficaria la, sem ver nada do que entrou).
+      RecarregarTelaAposGravacao(contaTexto, anoTexto, True);
     except
       on E: Exception do
         if erro = '' then
@@ -1907,21 +1933,20 @@ procedure TFormMoney.miImpTransClick(Sender: TObject);
 var
   caminho, nomeArquivo, contaTexto, anoTexto, mensagem, erro: string;
   registros: TRegistrosOfx;
-  ignorados, novos, contaId, indice: Integer;
+  ignorados, novos, contaId: Integer;
 begin
   // Mesmo destino do miImport: a conta escolhida no filtro. O CSV nao traz
   // conta nenhuma (o modelo so' tem ID, TRNTYPE, DTPOSTED, TRNAMT, CHKNUM e
   // MEMO), entao sem conta escolhida nao ha' para onde gravar - e, como a
   // importacao SUBSTITUI as tabelas, errar de destino nao teria volta.
-  if (cbAccount.ItemIndex < 0) or (cbAccount.ItemIndex >= cbAccount.Items.Count)
-  then
+  contaId := IdContaSelecionada;
+  if contaId < 0 then
   begin
     MessageDlg('Cadastre uma conta antes de importar as transações.' +
       LineEnding + 'O CSV vira o extrato inteiro da conta escolhida no ' +
       'filtro.', mtWarning, [mbOK], 0);
     Exit;
   end;
-  contaId := Integer(PtrInt(cbAccount.Items.Objects[cbAccount.ItemIndex]));
 
   // A recarga das combos no fim comeca sempre no primeiro item: guarda as
   // duas escolhas para devolver o usuario para onde ele estava.
@@ -1932,11 +1957,9 @@ begin
   if not dlgImpCsv.Execute then
     Exit; // usuario cancelou
 
-  caminho := dlgImpCsv.FileName;
-  // Caminho relativo (sem pasta) fica na pasta inicial do dialogo, para o
-  // arquivo nao cair no diretorio de trabalho corrente da aplicacao.
-  if ExtractFilePath(caminho) = '' then
-    caminho := IncludeTrailingPathDelimiter(dlgImpCsv.InitialDir) + caminho;
+  // Caminho relativo (sem pasta) fica na pasta inicial do dialogo - a mesma
+  // regra dos outros dialogos de arquivo, em CaminhoAbsoluto.
+  caminho := CaminhoAbsoluto(dlgImpCsv.FileName, dlgImpCsv.InitialDir);
   nomeArquivo := ExtractFileName(caminho);
 
   // Le o arquivo ANTES de mexer no database: aqui a gravacao e' uma
@@ -1972,9 +1995,7 @@ begin
   // religa tudo e refaz filtros + grade, e vale mesmo quando falha no meio.
   try
     try
-      SQLQueryContas.Close;
-      SQLQuerySaldos.Close;
-      SQLQueryExtratos.Close;
+      FecharQueriesContas;
       novos := ImportarCsv(SQLite3ConnContas, contaId, registros);
     except
       on E: Exception do
@@ -1983,24 +2004,12 @@ begin
     end;
   finally
     try
-      if not SQLQueryContas.Active then
-        SQLQueryContas.Open;
-      // Recarrega as combos - a lista de anos vem de saldos, que a
-      // substituicao REFAZ (sobra so' o periodo do CSV), entao o ano pode
-      // mudar de valor e ate' de quantidade. A conta e o ano escolhidos sao
-      // devolvidos depois do recarregar, e as duas grades reabrem filtradas.
-      CarregarFiltrosExtratos;
-      indice := cbAccount.Items.IndexOf(contaTexto);
-      if indice >= 0 then
-        cbAccount.ItemIndex := indice;
-      indice := cbYear.Items.IndexOf(anoTexto);
-      if indice >= 0 then
-        cbYear.ItemIndex := indice;
-      AplicarFiltroExtratos;
-      AplicarFiltroSaldos;
-      // Importar tambem cai na tela de extratos (mesmo caminho do
-      // abrir/criar): e' la que as linhas novas aparecem.
-      IrParaTelaExtratos;
+      // Recarrega as combos (a lista de anos vem de saldos, que a
+      // substituicao REFAZ - sobra so' o periodo do CSV, entao o ano pode
+      // mudar de valor e ate' de quantidade), devolve a conta e o ano que o
+      // usuario tinha escolhido, reabre as duas grades ja' filtradas e cai
+      // na tela de extratos, que e' onde as linhas novas aparecem.
+      RecarregarTelaAposGravacao(contaTexto, anoTexto, True);
     except
       on E: Exception do
         if erro = '' then
@@ -2036,15 +2045,14 @@ begin
   // Mesmo destino do miImpTrans: a conta escolhida no filtro. Exportar é o
   // passo inverso, então vale o mesmo aviso da falta de conta - sem conta
   // escolhida não há extrato nenhum para levar para o arquivo.
-  if (cbAccount.ItemIndex < 0) or (cbAccount.ItemIndex >= cbAccount.Items.Count)
-  then
+  contaId := IdContaSelecionada;
+  if contaId < 0 then
   begin
     MessageDlg('Escolha uma conta antes de exportar as transações.' +
       LineEnding + 'O CSV leva o extrato inteiro da conta escolhida no filtro.',
       mtWarning, [mbOK], 0);
     Exit;
   end;
-  contaId := Integer(PtrInt(cbAccount.Items.Objects[cbAccount.ItemIndex]));
   contaTexto := cbAccount.Text;
 
   // O diálogo abre na pasta da aplicação, sugerindo "extratos.csv".
@@ -2057,10 +2065,9 @@ begin
   // O filtro já é *.csv, mas ele pode digitar outro nome de extensão.
   if LowerCase(ExtractFileExt(caminho)) <> '.csv' then
     caminho := ChangeFileExt(caminho, '.csv');
-  // Caminho relativo (sem pasta) fica na pasta inicial do diálogo, para o
-  // arquivo não cair no diretório de trabalho corrente da aplicação.
-  if ExtractFilePath(caminho) = '' then
-    caminho := IncludeTrailingPathDelimiter(dlgExpCsv.InitialDir) + caminho;
+  // Caminho relativo (sem pasta) fica na pasta inicial do diálogo - a mesma
+  // regra dos outros diálogos de arquivo, em CaminhoAbsoluto.
+  caminho := CaminhoAbsoluto(caminho, dlgExpCsv.InitialDir);
 
   // Exportar não mexe no que está gravado nem na tela: a leitura roda em outra
   // query, só de leitura, na MESMA conexão - então nada aqui fecha as queries
@@ -2104,11 +2111,9 @@ begin
   // O filtro já é *.db, mas ele pode digitar outro nome de extensão.
   if LowerCase(ExtractFileExt(novoArquivo)) <> '.db' then
     novoArquivo := ChangeFileExt(novoArquivo, '.db');
-  // Caminho relativo (sem pasta) fica na pasta inicial do diálogo, para o
-  // database não cair no diretório de trabalho corrente da aplicação.
-  if ExtractFilePath(novoArquivo) = '' then
-    novoArquivo := IncludeTrailingPathDelimiter(dlgNewDatabase.InitialDir) +
-      novoArquivo;
+  // Caminho relativo (sem pasta) fica na pasta inicial do diálogo - a mesma
+  // regra dos outros diálogos de arquivo, em CaminhoAbsoluto.
+  novoArquivo := CaminhoAbsoluto(novoArquivo, dlgNewDatabase.InitialDir);
 
   // banks.db é o database de bancos da aplicação (dado do usuário):
   // o "Novo Database" nunca pode sobrescrevê-lo.
@@ -2136,9 +2141,7 @@ begin
   // "saldos"; a de extratos entra por último, já filtrada (as três moram no
   // mesmo database, na mesma conexão).
   try
-    SQLQueryContas.Close;
-    SQLQueryExtratos.Close;
-    SQLQuerySaldos.Close;
+    FecharQueriesContas;
     SQLite3ConnContas.Close;
     SQLite3ConnContas.DatabaseName := novoArquivo;
     SQLQueryContas.Open;
@@ -2176,11 +2179,10 @@ begin
     Exit; // usuário cancelou
 
   abrirArquivo := dlgOpenDatabase.FileName;
-  // Caminho relativo (sem pasta) fica na pasta inicial do diálogo, para o
-  // database não cair no diretório de trabalho corrente da aplicação.
-  if ExtractFilePath(abrirArquivo) = '' then
-    abrirArquivo := IncludeTrailingPathDelimiter(dlgOpenDatabase.InitialDir) +
-      abrirArquivo;
+  // Caminho relativo (sem pasta) fica na pasta inicial do diálogo - a mesma
+  // regra dos outros diálogos de arquivo, em CaminhoAbsoluto.
+  abrirArquivo := CaminhoAbsoluto(dlgOpenDatabase.FileName,
+    dlgOpenDatabase.InitialDir);
 
   if not FileExists(abrirArquivo) then
   begin
@@ -2207,9 +2209,7 @@ begin
   // conexão para o arquivo escolhido e reabre as queries da tbContas, da
   // tbSaldos e a de extratos (uma ligação só para as três tabelas).
   try
-    SQLQueryContas.Close;
-    SQLQueryExtratos.Close;
-    SQLQuerySaldos.Close;
+    FecharQueriesContas;
     SQLite3ConnContas.Close;
     // Database criado antes do campo "hidden" nao tem a coluna, e sem ela a
     // query do cbAccount falharia logo abaixo. O ALTER roda numa CONEXAO
@@ -2296,7 +2296,7 @@ end;
 
 procedure TFormMoney.btnMonthClearClick(Sender: TObject);
 var
-  ano, mes, apagados, indice: Integer;
+  ano, mes, apagados: Integer;
   erro, mesTexto, contaTexto, anoTexto: string;
 begin
   // Botão escondido é o caminho das telas de gestão (e o da navegação sem
@@ -2332,9 +2332,7 @@ begin
   apagados := 0;
   try
     try
-      SQLQueryContas.Close;
-      SQLQuerySaldos.Close;
-      SQLQueryExtratos.Close;
+      FecharQueriesContas;
       apagados := ExcluirMes(SQLite3ConnContas, ano, mes);
     except
       on E: Exception do
@@ -2343,22 +2341,13 @@ begin
     end;
   finally
     try
-      if not SQLQueryContas.Active then
-        SQLQueryContas.Open;
       // A lista de anos vem de "saldos", e o mês excluído pode ter sido o
       // ÚNICO do ano - o ano então some do combo. O CarregarFiltrosExtratos
       // já refaz as guias (AtualizarAbasMes) pelo novo conteúdo da tabela, e
-      // o ItemIndex do cbYear restaurado reexecuta esse recalculo, agora no
-      // ano que o usuário estava olhando.
-      CarregarFiltrosExtratos;
-      indice := cbAccount.Items.IndexOf(contaTexto);
-      if indice >= 0 then
-        cbAccount.ItemIndex := indice;
-      indice := cbYear.Items.IndexOf(anoTexto);
-      if indice >= 0 then
-        cbYear.ItemIndex := indice;
-      AplicarFiltroExtratos;
-      AplicarFiltroSaldos;
+      // o ItemIndex do cbYear restaurado reexecuta esse recálculo, agora no
+      // ano que o usuário estava olhando. Diferente dos importar, não há
+      // navegação: excluir mês é feito na própria tela de extratos.
+      RecarregarTelaAposGravacao(contaTexto, anoTexto, False);
     except
       on E: Exception do
         if erro = '' then

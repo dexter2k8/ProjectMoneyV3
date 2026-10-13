@@ -1330,6 +1330,28 @@ try {
     $pasPath = Join-Path $root 'unitmoney.pas'
     if (Test-Path $pasPath) { $pasTexto = [IO.File]::ReadAllText($pasPath) }
     Check 'unitmoney.pas lido' ($pasTexto -ne '') $pasPath
+    # A unit de formatos (dinheiro, datas, plural e numero de SQL - funcoes
+    # puras, sem nada do form) e' de onde os handlers de campo tiram o texto
+    # que a grade mostra, entao as checagens de formatacao conferem as DUAS
+    # pontas: o handler no .pas e a funcao nesta unit.
+    $fmtTexto = ''
+    $fmtPath = Join-Path $root 'unitMoneyFormatos.pas'
+    if (Test-Path $fmtPath) { $fmtTexto = [IO.File]::ReadAllText($fmtPath) }
+    Check 'unitMoneyFormatos.pas lido' ($fmtTexto -ne '') $fmtPath
+    # Extrai o CORPO de uma funcao da unit de formatos. O nome aparece DUAS
+    # vezes (a declaracao da interface e a implementacao), entao o ancora na
+    # assinatura seguida de "begin": so' a implementacao tem isso - a mesma
+    # ideia do prefixo TFormMoney. que os blocos do form usam.
+    function Get-FmtBody([string]$texto, [string]$nome) {
+        # A assinatura da implementacao e' a unica seguida de "begin" (com um
+        # bloco "var" opcional no meio); a da interface vem seguida de outra
+        # declaracao e nao casa - o mesmo ancora que os blocos do form fazem
+        # com o prefixo TFormMoney.
+        $padrao = '(?s)function\s+' + $nome + '\([^)]*\)[^;]*;' +
+            '\s*(?:var.*?\n)?\s*begin.*?\nend;'
+        if ($texto -match $padrao) { return $Matches[0] }
+        return ''
+    }
     # Regra geral por tras do erro "incapaz de localizar a classe do
     # componente" que o F12 mostrava: o Lazarus so' resolve objeto de .lfm pela
     # paleta, por designer base ou por GetClass do PROPRIO processo, e classe
@@ -1572,11 +1594,21 @@ try {
     Check 'SQLQuerySaldos preenche a conta do combo no registro novo (.lfm)' (
         $blocoSQLSaldos.Contains('OnNewRecord = SQLQuerySaldosNewRecord')) (
         'OnNewRecord = SQLQuerySaldosNewRecord ausente na query de saldos')
+    # O filtro por conta virou o helper CondicaoConta (um lugar so' para
+    # "account_id = N" - extratos e saldos compartilham), entao a checagem
+    # cobre as DUAS pontas: AplicarFiltroSaldos usando o helper, e o helper
+    # montando a clausula que entra no WHERE. A extracao do bloco fica aqui
+    # em cima porque o mesmo bloco alimenta a checagem da mascara la embaixo.
+    $blocoFiltroS = ''
+    if ($pasTexto -match '(?s)procedure\s+TFormMoney\.AplicarFiltroSaldos.*?\nend;') {
+        $blocoFiltroS = $Matches[0]
+    }
     Check 'saldos filtrados pela conta do cbAccount (.pas)' (
-        ($pasTexto -match 'procedure\s+TFormMoney\.AplicarFiltroSaldos') -and
+        ($blocoFiltroS -ne '') -and
+        ($blocoFiltroS -match 'condicao := CondicaoConta') -and
+        ($pasTexto -match "Result := 'account_id = ' \+ IntToStr") -and
         ($pasTexto -match 'CAST\(balance AS REAL\) AS balance') -and
-        ($pasTexto -match 'FROM saldos') -and
-        ($pasTexto -match 'WHERE account_id = ')) (
+        ($pasTexto -match 'FROM saldos')) (
         'AplicarFiltroSaldos e/ou o filtro por account_id ausentes')
     Check 'OnNewRecord de saldos declarado e implementado (.pas)' (
         ($pasTexto -match
@@ -1616,14 +1648,21 @@ try {
     if ($pasTexto -match '(?s)procedure\s+TFormMoney\.SaldosEnddateSetText.*?\nend;') {
         $blocoSetS = $Matches[0]
     }
+    # As conversoes de data moram em unitMoneyFormatos (DataExibicao exibe e
+    # DataISO grava), entao a checagem cobre as DUAS pontas: o handler no .pas
+    # delegando para a funcao, e a funcao fazendo a troca de fato.
+    $blocoDataExib = Get-FmtBody $fmtTexto 'DataExibicao'
+    $blocoDataISO = Get-FmtBody $fmtTexto 'DataISO'
     Check 'enddate da tbSaldos exibido como DD/MM/AAAA (.pas)' (
         ($blocoGetS -ne '') -and
-        $blocoGetS.Contains(
-            "Copy(data, 9, 2) + '/' + Copy(data, 6, 2) + '/' + Copy(data, 1, 4)")) (
+        ($blocoGetS -match 'DataExibicao\(Sender\.AsString\)') -and
+        ($blocoDataExib.Contains(
+            "Copy(Result, 9, 2) + '/' + Copy(Result, 6, 2)"))) (
         'SaldosEnddateGetText ausente ou sem a conversao AAAA-MM-DD -> DD/MM/AAAA')
     Check 'enddate da tbSaldos gravado como AAAA-MM-DD (.pas)' (
         ($blocoSetS -ne '') -and
-        $blocoSetS.Contains("FormatDateTime('yyyy-mm-dd'")) (
+        ($blocoSetS -match 'DataISO\(AText, iso\)') -and
+        ($blocoDataISO.Contains("FormatDateTime('yyyy-mm-dd'"))) (
         'SaldosEnddateSetText ausente ou sem a conversao DD/MM/AAAA -> AAAA-MM-DD')
     # balance: numerico com DUAS casas, separador de milhar no ponto e o sinal
     # na frente ("20,00", "-20,00" e "-1.234,50" - sem o par C/D da grade de
@@ -1638,13 +1677,17 @@ try {
     if ($pasTexto -match '(?s)procedure\s+TFormMoney\.SaldosBalanceSetText.*?\nend;') {
         $blocoBalSet = $Matches[0]
     }
+    # O texto do balance vem de FormatarDinheiro (unitMoneyFormatos) - o mesmo
+    # de onde o ValorCD da grade tira o numero, MAS sem o par C/D: a coluna
+    # de saldo mostra o sinal na frente ("20,00", "-1.234,50").
+    $blocoFormatar = Get-FmtBody $fmtTexto 'FormatarDinheiro'
     Check 'balance da tbSaldos exibido com duas casas, milhar e sinal (.pas)' (
         ($blocoBalGet -ne '') -and
-        $blocoBalGet.Contains(
-            "FormatFloat('#,##0.00', Sender.AsFloat, formatos)") -and
-        $blocoBalGet.Contains("ThousandSeparator := '.'") -and
-        (-not $blocoBalGet.Contains("' C'")) -and
-        (-not $blocoBalGet.Contains("' D'"))) (
+        ($blocoBalGet -match 'FormatarDinheiro\(Sender\.AsFloat\)') -and
+        ($blocoFormatar -match "FormatFloat\('#,##0\.00', valor, formatos\)") -and
+        ($blocoFormatar -match "ThousandSeparator := '\.'") -and
+        (-not $blocoFormatar.Contains("' C'")) -and
+        (-not $blocoFormatar.Contains("' D'"))) (
         'SaldosBalanceGetText ausente ou sem o formato #,##0.00 com sinal')
     Check 'balance da tbSaldos aceita virgula e ponto na edicao (.pas)' (
         ($blocoBalSet -ne '') -and
@@ -1657,10 +1700,7 @@ try {
     if ($pasTexto -match '(?s)procedure\s+TFormMoney\.PrepararCamposSaldos.*?\nend;') {
         $blocoPrepS = $Matches[0]
     }
-    $blocoFiltroS = ''
-    if ($pasTexto -match '(?s)procedure\s+TFormMoney\.AplicarFiltroSaldos.*?\nend;') {
-        $blocoFiltroS = $Matches[0]
-    }
+    # ($blocoFiltroS ja' foi extraido la em cima, junto com o filtro por conta)
     Check 'mascara de data e handlers de enddate e balance religados a cada Open (.pas)' (
         ($blocoPrepS -ne '') -and
         $blocoPrepS.Contains('OnGetText := @SaldosEnddateGetText') -and
@@ -1725,14 +1765,17 @@ try {
     if ($pasTexto -match '(?s)procedure\s+TFormMoney\.ExtratoTrnAmtGetText.*?\nend;') {
         $blocoTrnAmt = $Matches[0]
     }
+    # O par C/D em si mora em ValorCD (unitMoneyFormatos), que usa o MESMO
+    # FormatarDinheiro do balance - entao a checagem cobre as tres pecas: o
+    # handler delegando, o ValorCD montando a letra e o formatar com milhar.
+    $blocoValorCD = Get-FmtBody $fmtTexto 'ValorCD'
     Check 'coluna de valor da grade de extratos com C/D e milhar (.pas)' (
         ($blocoTrnAmt -ne '') -and
-        ($blocoTrnAmt -match
-            "FormatFloat\('#,##0\.00', valor, formatos\) \+ ' C'") -and
-        ($blocoTrnAmt -match
-            "FormatFloat\('#,##0\.00', -valor, formatos\) \+ ' D'") -and
-        ($blocoTrnAmt -match "ThousandSeparator := '\.'") -and
-        ($blocoTrnAmt -match 'AText := Sender\.AsString')) (
+        ($blocoTrnAmt -match 'ValorCD\(Sender\.AsFloat\)') -and
+        ($blocoTrnAmt -match 'AText := Sender\.AsString') -and
+        ($blocoValorCD -match "FormatarDinheiro\(valor\) \+ ' C'") -and
+        ($blocoValorCD -match "FormatarDinheiro\(-valor\) \+ ' D'") -and
+        ($blocoFormatar -match "ThousandSeparator := '\.'")) (
         'ExtratoTrnAmtGetText ausente ou sem o par C/D com separador de milhar')
     # Os DOIS campos de saldo (tsAnterior = abertura, txtSaldo = fechamento
     # do mes ativo) passam pelo MESMO ExibirSaldo: o MESMO par C/D da coluna
@@ -1746,11 +1789,11 @@ try {
         $blocoExibirSaldo = $Matches[0]
     }
     Check 'campos de saldo mostram C/D com valor absoluto e milhar (.pas)' (
-        ($blocoExibirSaldo -match
-            "FormatFloat\('#,##0\.00', valor, formatos\) \+ ' C'") -and
-        ($blocoExibirSaldo -match
-            "FormatFloat\('#,##0\.00', -valor, formatos\) \+ ' D'") -and
-        ($blocoExibirSaldo -match "ThousandSeparator := '\.'")) (
+        ($blocoExibirSaldo -ne '') -and
+        ($blocoExibirSaldo -match 'Campo\.Caption := ValorCD\(valor\)') -and
+        ($blocoValorCD -match "FormatarDinheiro\(valor\) \+ ' C'") -and
+        ($blocoValorCD -match "FormatarDinheiro\(-valor\) \+ ' D'") -and
+        ($blocoFormatar -match "ThousandSeparator := '\.'")) (
         'ExibirSaldo nao formata o saldo com o par C/D da grade')
     Check 'campos de saldo pintam so o negativo de vermelho (.pas)' (
         ($blocoExibirSaldo -match 'Campo\.Font\.Color := clRed') -and
@@ -3972,7 +4015,11 @@ try {
             'ImportarCsv sem a limpeza das duas tabelas')
 
         # O handler tem de LER o csv e GRAVAR pela substituicao - e, como os
-        # demais importar, cair na tela de extratos no fim.
+        # demais importar, cair na tela de extratos no fim. A recarga pos-
+        # gravacao e' o helper RecarregarTelaAposGravacao (compartilhado pelo
+        # miImport, pelo miImpTrans e pelo btnMonthClear): o "True" no fim e'
+        # o AIrParaExtratos, e e' o proprio helper quem chama IrParaTelaExtratos
+        # - as DUAS pontas entram na checagem.
         $blocoImpCsv = ''
         if ($pasTexto -match
             '(?s)procedure TFormMoney\.miImpTransClick.*?\nend;') {
@@ -3981,7 +4028,9 @@ try {
         Check 'miImpTransClick le o CSV e grava pela substituicao (.pas)' (
             ($blocoImpCsv -match 'LerCsv') -and
             ($blocoImpCsv -match 'ImportarCsv') -and
-            ($blocoImpCsv -match 'IrParaTelaExtratos')) (
+            ($blocoImpCsv -match
+                'RecarregarTelaAposGravacao\(contaTexto, anoTexto, True\)') -and
+            ($pasTexto -match 'if AIrParaExtratos then')) (
             'miImpTransClick sem LerCsv/ImportarCsv')
 
         # Item de menu ligado ao handler e dialogo de arquivo com filtro de
@@ -4518,13 +4567,20 @@ try {
         if ($pasTexto -match '(?s)procedure TFormMoney\.btnMonthClearClick.*?\nend;') {
             $blocoBtn = $Matches[0]
         }
+        # Fechar as queries antes de gravar e recarregar a tela depois sao os
+        # DOIS helpers (FecharQueriesContas e RecarregarTelaAposGravacao com o
+        # "False" = sem navegar, que e' o caso do excluir mes), entao a
+        # checagem confere o handler nos helpers e os helpers de fato.
         Check 'btnMonthClearClick confirma antes de excluir e recarrega (.pas)' (
             ($blocoBtn -match 'mtConfirmation') -and
             ($blocoBtn -match 'mrYes') -and
             ($blocoBtn -match 'ExcluirMes') -and
             ($blocoBtn -match 'IntToStr\(apagados\)') -and
-            ($blocoBtn -match 'SQLQueryContas\.Close') -and
-            ($blocoBtn -match 'AtualizarAbasMes|CarregarFiltrosExtratos')) (
+            ($blocoBtn -match 'FecharQueriesContas') -and
+            ($blocoBtn -match
+                'RecarregarTelaAposGravacao\(contaTexto, anoTexto, False\)') -and
+            ($pasTexto -match 'SQLQueryContas\.Close') -and
+            ($pasTexto -match 'CarregarFiltrosExtratos')) (
             'btnMonthClearClick sem confirmacao, fechar-as-queries ou recarga')
         $blocoMenuBtn = Get-LfmBlock $lfmTexto 'btnMonthClear: TSpeedButton'
         Check 'btnMonthClear nasce oculto e ligado ao handler (.lfm)' (
