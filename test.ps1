@@ -1252,11 +1252,15 @@ try {
     Check 'DBNavTrans ligado a DataSourceExtratos (.lfm)' (
         $blocoNav.Contains('DataSource = DataSourceExtratos')) $detNav
     # Sem dgDisplayMemoText o TDBGrid desenha o literal "(MEMO)" no lugar do
-    # conteudo (os campos TEXT do SQLite viram ftMemo) - e o desenho nao da
-    # para ler pela janela, entao a prova fica no .lfm. Vale para as 2 grades
-    # que NAO formatam nada (bancos e contas); as de extratos e de saldos sao
-    # a excecao de proposito, com OnGetText no .pas, logo abaixo.
-    foreach ($nomeGrade in @('gridBancos', 'gridContas')) {
+    # conteudo (os campos TEXT do SQLite viram ftMemo), so' entrega a tecla ao
+    # editor de campo blob com a opcao ligada (sem ela a digitacao some sem
+    # erro nenhum - e' o "teclado nao funciona") - e o desenho nao da para
+    # ler pela janela, entao a prova fica no .lfm. As 3 grades tem a opcao;
+    # o que muda e' como cada uma protege o que FORMATA: bancos e contas nao
+    # formatam nada, extratos CASTa o dtposted (checado la embaixo) para a
+    # coluna Data continuar DD/MM/AAAA, e saldos CASTa o enddate e nao usa a
+    # opcao (la ela mudaria o editor que a mascara guia).
+    foreach ($nomeGrade in @('gridBancos', 'gridContas', 'gridTrans')) {
         $blocoGrade = Get-LfmBlock $lfmTexto ($nomeGrade + ': TDBGrid')
         $detGrade = 'bloco ' + $nomeGrade + ' nao encontrado no .lfm'
         if ($blocoGrade -ne '') {
@@ -1265,15 +1269,8 @@ try {
         Check ($nomeGrade + ' exibe o texto dos campos memo (.lfm)') (
             $blocoGrade.Contains('dgDisplayMemoText')) $detGrade
     }
-    # A grade de extratos formata data e valor pelos handlers de OnGetText do
-    # .pas - e com dgDisplayMemoText ligado o TDBGrid le o campo memo direto e
-    # ignora o handler (por isso a opcao saiu daqui). As colunas ficaram
-    # declaradas na ordem pedida: id, account_id e trntype nao tem coluna.
-    $detMemo = 'dgDisplayMemoText no bloco gridTrans quebra a formatacao'
-    if ($blocoGrid -eq '') { $detMemo = $detGrid }
-    $memoOk = ($blocoGrid -ne '') -and (-not $blocoGrid.Contains('dgDisplayMemoText'))
-    Check 'gridTrans sem dgDisplayMemoText (formatacao por OnGetText) (.lfm)' (
-        $memoOk) $detMemo
+    # E as colunas da grade de extratos ficaram declaradas na ordem pedida:
+    # id, account_id e trntype nao tem coluna la.
     # Mesma regra na grade de saldos: enddate e' texto ISO no arquivo e a
     # exibicao vem do OnGetText (DD/MM/AAAA), entao o dgDisplayMemoText tem de
     # estar fora - com ele ligado o editor receberia o ISO cru e a mascara
@@ -1398,6 +1395,18 @@ try {
             'CAST\(enddate AS VARCHAR\) AS enddate FROM saldos') (
         'AplicarFiltroSaldos nao faz CAST(enddate AS VARCHAR): o campo vira ' +
         'ftMemo (blob) e a TDBGrid recusa a digitacao da data')
+    # Mesmo CAST na coluna Data dos extratos - e la ele e' DOBRO: sem ele o
+    # campo vira ftMemo, a TDBGrid recusa a digitacao da data E, com o
+    # dgDisplayMemoText da grade ligado, a coluna passaria a desenhar o valor
+    # ISO cru (a opcao le F.AsString no lugar do DisplayText que o OnGetText
+    # formata). O CAST faz o campo nascer ftString: nem blob para a opcao
+    # enxergar, nem inteiro para perder os casos do AAAAMMDD do OFX.
+    Check 'dtposted da grade de extratos nasce ftString: CAST VARCHAR no SELECT (.pas)' (
+        $pasTexto -match
+            'CAST\(dtposted AS VARCHAR\) AS dtposted') (
+        'AplicarFiltroExtratos nao faz CAST(dtposted AS VARCHAR): o campo vira ' +
+        'ftMemo (blob), a TDBGrid recusa a digitacao e o desenho ignora o ' +
+        'OnGetText (DD/MM/AAAA)')
     $faltaHandler = ''
     foreach ($ligacao in @(
         'dtposted=ExtratoDtpostedGetText',
@@ -1630,6 +1639,26 @@ try {
         ($pasTexto -match
             'procedure\s+TFormMoney\.SQLQueryContasNewRecord')) (
         'handler SQLQueryContasNewRecord ausente')
+    # ... e o mesmo trio nos extratos: account_id vem do cbAccount (e' ele
+    # que filtra a tela, como na tbSaldos) e trntype nasce 'OTHER', o mesmo
+    # padrao do leitor de OFX/OFC quando o arquivo nao traz o tipo. As duas
+    # sao NOT NULL e nao aparecem na grade, entao sem o handler o INSERT do
+    # registro novo mandaria NULL e o SQLite recusaria a linha - nao dava
+    # para criar transacao nenhuma na mao.
+    $blocoSQLExtratos = Get-LfmBlock $lfmTexto 'SQLQueryExtratos: TSQLQuery'
+    Check 'SQLQueryExtratos nasce com conta e tipo no registro novo (.lfm)' (
+        $blocoSQLExtratos.Contains('OnNewRecord = SQLQueryExtratosNewRecord')) (
+        'OnNewRecord = SQLQueryExtratosNewRecord ausente na query de extratos')
+    Check 'OnNewRecord de extratos declarado e implementado (.pas)' (
+        ($pasTexto -match
+            'procedure\s+SQLQueryExtratosNewRecord\s*\(DataSet: TDataSet\)') -and
+        ($pasTexto -match
+            'procedure\s+TFormMoney\.SQLQueryExtratosNewRecord') -and
+        ($pasTexto -match
+            "FieldByName\('account_id'\)\.AsInteger := idConta") -and
+        ($pasTexto -match
+            "FieldByName\('trntype'\)\.AsString := 'OTHER'")) (
+        'handler SQLQueryExtratosNewRecord ausente ou incompleto')
     # ... e a regra de leitura: o combo de contas e' o filtro da tela, e ele
     # so' lista o que nao esta marcado como oculto.
     Check 'cbAccount so lista conta visivel: WHERE hidden = 0 (.pas)' (
@@ -2708,6 +2737,51 @@ try {
             $gradeTr8 = Find-GridTransHwnd $mainNav
             Check 'grade de extratos localizada para editar o Valor (passo [8])' (
                 $gradeTr8 -ne [IntPtr]::Zero)
+            # A coluna Data e' a prova da digitacao: dtposted e' TEXT (ftMemo
+            # no driver SQLite) e a TDBGrid so' entrega a tecla ao editor de
+            # campo blob com dgDisplayMemoText ligado - sem a opcao (e sem o
+            # CAST que faz o campo nascer ftString) o editor abria e nada
+            # entrava nele, que e' o sintoma de "o teclado nao funciona" na
+            # tela de extratos. F2 abre o editor da celula, EM_SETSEL marca
+            # tudo e o WM_CHAR tem de substituir o texto; ESC devolve a
+            # celula como estava (o arquivo so' e' tocado na edicao do Valor,
+            # logo abaixo).
+            if ($gradeTr8 -ne [IntPtr]::Zero) {
+                $antesData = @([UiTest]::Visible($gradeTr8))
+                [void][UiTest]::Msg($gradeTr8, 0x0100, [IntPtr]0x24, [IntPtr]::Zero)
+                [void][UiTest]::Msg($gradeTr8, 0x0101, [IntPtr]0x24, [IntPtr]::Zero)
+                [void][UiTest]::Msg($gradeTr8, 0x0100, [IntPtr]0x71, [IntPtr]::Zero)
+                [void][UiTest]::Msg($gradeTr8, 0x0101, [IntPtr]0x71, [IntPtr]::Zero)  # VK_F2
+                Start-Sleep -Milliseconds 250
+                $editorData = [IntPtr]::Zero
+                foreach ($wEd in @([UiTest]::Visible($gradeTr8))) {
+                    if (($wEd -match '^Edit \|') -and
+                        ($antesData -notcontains $wEd)) {
+                        $editorData = [IntPtr][int64](
+                            [regex]::Match($wEd, 'id=(\d+)').Groups[1].Value)
+                        break
+                    }
+                }
+                $txtData = ''
+                if ($editorData -ne [IntPtr]::Zero) {
+                    [void][UiTest]::Msg($editorData, 0x00B1, [IntPtr]::Zero,
+                        [IntPtr]-1)                                   # EM_SETSEL
+                    [void][UiTest]::Msg($editorData, 0x0100, [IntPtr]0x37,
+                        [IntPtr]::Zero)
+                    [void][UiTest]::Msg($editorData, 0x0102, [IntPtr]0x37,
+                        [IntPtr]::Zero)
+                    [void][UiTest]::Msg($editorData, 0x0101, [IntPtr]0x37,
+                        [IntPtr]::Zero)
+                    Start-Sleep -Milliseconds 250
+                    $txtData = [UiTest]::GetText($editorData)
+                }
+                Write-Host ('  dtposted: digitado="' + $txtData + '"')
+                Check 'tecla digitada na coluna Data entra no editor (passo [8])' (
+                    $txtData -eq '7') ('texto="' + $txtData + '"')
+                [void][UiTest]::Msg($gradeTr8, 0x0100, [IntPtr]0x1B, [IntPtr]::Zero)
+                [void][UiTest]::Msg($gradeTr8, 0x0101, [IntPtr]0x1B, [IntPtr]::Zero)
+                Start-Sleep -Milliseconds 150
+            }
             if ($gradeTr8 -ne [IntPtr]::Zero) {
                 # Teclado, nao clique (mesmo guard do passo [10]: o clique
                 # sai cedo quando a grade nao esta focada). VK_HOME poe a
@@ -3509,6 +3583,156 @@ try {
         $visCb = @(Wait-Interface $mainCb $true)
         Check 'interface revelada no passo [10]' ($visCb.Count -gt 0) (
             'janelas=' + $visCb.Count)
+
+        # ---- Criar transacao na grade (o caminho do usuario): o "Show
+        # Controls" revela o DBNavTrans (241x25 nesta tela - os das telas de
+        # gestao tem 359x32) e o nbInsert abre o registro novo. account_id e'
+        # NOT NULL e nao tem coluna na grade (e' ela que filtra): so' o
+        # OnNewRecord preenche, com a conta do cbAccount que o passo [9]
+        # deixou (1 item); trntype idem, com o 'OTHER' dos leitores de OFX.
+        # Sem os dois o INSERT nomeava todas as colunas do SELECT * e mandava
+        # NULL - o SQLite recusava a linha e nao dava para criar nada na mao.
+        # Data e Valor (as duas NOT NULL da grade) sao digitadas aqui do jeito
+        # que o usuario digita: a 1a tecla vai para a GRADE (abre o editor e
+        # passa o caractere pelo EditorCanAcceptKey), as demais vao para o
+        # EDITOR ja' aberto. O registro novo nasce a ULTIMA linha (append do
+        # SQLDB), entao VK_UP poe; VK_DOWN volta para ele, e o nbDelete com a
+        # confirmacao do Delete tira tudo de volta - o arquivo tem de sair
+        # exatamente como estava (o passo [9] confere a contagem absoluta).
+        $gradeCri = Find-GridTransHwnd $mainCb
+        $toggleCri = [IntPtr]::Zero
+        foreach ($wCri in @([UiTest]::Visible($mainCb))) {
+            if ($wCri -match '^Button \| id=(\d+) \| "Show Controls"') {
+                $toggleCri = [IntPtr][int64]$Matches[1]
+            }
+        }
+        Check 'grade e "Show Controls" da tela de extratos encontrados (passo [10])' (
+            ($gradeCri -ne [IntPtr]::Zero) -and ($toggleCri -ne [IntPtr]::Zero)) (
+            'grade=' + $gradeCri + ' toggle=' + $toggleCri)
+        if (($gradeCri -ne [IntPtr]::Zero) -and ($toggleCri -ne [IntPtr]::Zero)) {
+            # BM_CLICK no toggle nativo: ele mesmo simula o clique e manda o
+            # BN_CLICKED para o painel que o hospeda.
+            [void][UiTest]::PostMessage($toggleCri, 0x00F5, [IntPtr]::Zero,
+                [IntPtr]::Zero)                                  # BM_CLICK
+            Start-Sleep -Milliseconds 500
+            $navCri = @([UiTest]::Visible($mainCb) |
+                Where-Object { $_ -match ' 241x25$' }) |
+                Select-Object -First 1
+            Check 'DBNavTrans visivel ao ligar o "Show Controls" (passo [10])' (
+                [bool]$navCri) ('linha=' + $navCri)
+            if ($navCri) {
+                $linhasAntes10 = [UiTest]::VScrollRows($gradeCri)
+                $navCriHwnd = [IntPtr][int64](
+                    [regex]::Match($navCri, 'id=(\d+)').Groups[1].Value)
+                $navCriW = [int]([regex]::Match($navCri,
+                    '\| \d+,\d+ (\d+)x\d+').Groups[1].Value)
+                # Digitar numa celula pelo caminho do usuario: VK_F2 abre o
+                # editor da celula (o do registro novo nasce vazio - o
+                # OnGetText devolve '' para o NULL), EM_SETSEL marca tudo e os
+                # WM_CHAR vao DIRETO para o EDITOR, que e' uma FILHA da grade
+                # recriada a cada abertura - o mesmo caminho do passo [8]. O
+                # primeiro caractere NUNCA vai pela GRADE aqui: o WM_KEYDOWN
+                # le o wParam como chave virtual, e o '-' (45) e' VK_INSERT -
+                # que na TDBGrid dispara opInsert, posta o registro pendente
+                # pela metade (trnamt ainda NULL) e abre a caixa de excecao;
+                # com o form desabilitado nenhum editor mais nasce.
+                function Invoke-EditorType([IntPtr]$grid, [string]$texto) {
+                    [void][UiTest]::Msg($grid, 0x0100, [IntPtr]0x71, [IntPtr]::Zero)
+                    [void][UiTest]::Msg($grid, 0x0101, [IntPtr]0x71, [IntPtr]::Zero)
+                    Start-Sleep -Milliseconds 250                   # VK_F2
+                    $ed = [IntPtr]::Zero
+                    foreach ($w in @([UiTest]::Visible($grid))) {
+                        if ($w -match '^Edit \|') {
+                            $ed = [IntPtr][int64](
+                                [regex]::Match($w, 'id=(\d+)').Groups[1].Value)
+                            break
+                        }
+                    }
+                    if ($ed -eq [IntPtr]::Zero) {
+                        Write-Host ('  editor nao abriu; grade=[' +
+                            (@([UiTest]::Visible($grid)) -join ' ;; ') + ']')
+                        return ''
+                    }
+                    [void][UiTest]::Msg($ed, 0x00B1, [IntPtr]::Zero,
+                        [IntPtr]-1)                               # EM_SETSEL
+                    foreach ($ch in $texto.ToCharArray()) {
+                        [void][UiTest]::Msg($ed, 0x0102,
+                            [IntPtr][Convert]::ToInt32($ch),
+                            [IntPtr]::Zero)                       # WM_CHAR
+                    }
+                    Start-Sleep -Milliseconds 250
+                    return [UiTest]::GetText($ed)
+                }
+                [void][UiTest]::ClickOn($navCriHwnd,
+                    [int][Math]::Floor($navCriW * 9 / 20), 12)   # nbInsert
+                Start-Sleep -Milliseconds 500
+                # Coluna 0 = Data (HOME + F2), digita a data; 3 direitas ate'
+                # o Valor (Data, Descricao, Documento, Valor) e digita o valor
+                # com o separador decimal do WINDOWS - o '.' o editor recusa.
+                [void][UiTest]::Msg($gradeCri, 0x0100, [IntPtr]0x24, [IntPtr]::Zero)
+                [void][UiTest]::Msg($gradeCri, 0x0101, [IntPtr]0x24, [IntPtr]::Zero)
+                $txtData10 = Invoke-EditorType $gradeCri '2026-06-15'
+                for ($rCri = 0; $rCri -lt 3; $rCri++) {
+                    [void][UiTest]::Msg($gradeCri, 0x0100, [IntPtr]0x27,
+                        [IntPtr]::Zero)                          # VK_RIGHT
+                    [void][UiTest]::Msg($gradeCri, 0x0101, [IntPtr]0x27,
+                        [IntPtr]::Zero)
+                    Start-Sleep -Milliseconds 250
+                }
+                $sepDecCri = [Globalization.CultureInfo]::CurrentCulture.
+                    NumberFormat.NumberDecimalSeparator
+                $valorCri = '-1' + $sepDecCri + '25'
+                $txtValor10 = Invoke-EditorType $gradeCri $valorCri
+                # VK_UP fecha o editor e POE: com o OnNewRecord certo o
+                # INSERT passa sem dialogo nenhum.
+                [void][UiTest]::Msg($gradeCri, 0x0100, [IntPtr]0x26, [IntPtr]::Zero)
+                [void][UiTest]::Msg($gradeCri, 0x0101, [IntPtr]0x26, [IntPtr]::Zero)
+                Start-Sleep -Milliseconds 700
+                $dlgCri = [UiTest]::FindDialog([uint32]$pCb.Id)
+                $vivaCri = (-not $pCb.HasExited)
+                Check 'criar transacao na grade nao abriu dialogo de erro (passo [10])' (
+                    ($dlgCri -eq [IntPtr]::Zero) -and $vivaCri) (
+                    'hwnd=' + $dlgCri + ' viva=' + $vivaCri)
+                if ($dlgCri -ne [IntPtr]::Zero) {
+                    # Diagnostico completo + ESC: opCancel desfaz o registro
+                    # pendente para nao envenenar o resto do passo.
+                    Write-Host ('  dialogo ao criar a transacao: caption="' +
+                        [UiTest]::DialogText($dlgCri) + '" filhos=[' +
+                        (@([UiTest]::Visible($dlgCri)) -join ' ;; ') + ']')
+                    $okCri = [UiTest]::FindOkButton($dlgCri)
+                    if ($okCri -ne [IntPtr]::Zero) {
+                        [void][UiTest]::PostMessage($okCri, 0x00F5,
+                            [IntPtr]::Zero, [IntPtr]::Zero)      # BM_CLICK
+                    }
+                    Start-Sleep -Milliseconds 500
+                    [void][UiTest]::Msg($gradeCri, 0x0100, [IntPtr]0x1B,
+                        [IntPtr]::Zero)                          # VK_ESCAPE
+                    [void][UiTest]::Msg($gradeCri, 0x0101, [IntPtr]0x1B,
+                        [IntPtr]::Zero)
+                    Start-Sleep -Milliseconds 300
+                }
+                $linhasCri10 = [UiTest]::VScrollRows($gradeCri)
+                Write-Host ('  transacao nova: data="' + $txtData10 +
+                    '" valor="' + $txtValor10 + '" linhas ' +
+                    $linhasAntes10 + ' -> ' + $linhasCri10 +
+                    ' viva=' + $vivaCri)
+                Check 'registro novo criado na grade (uma linha a mais) (passo [10])' (
+                    ($txtData10 -eq '2026-06-15') -and
+                    ($txtValor10 -eq $valorCri) -and
+                    ($linhasCri10 -eq ($linhasAntes10 + 1))) (
+                    'data="' + $txtData10 + '" valor="' + $txtValor10 +
+                    '" linhas ' + $linhasAntes10 + ' -> ' + $linhasCri10)
+                # A linha nova fica no arquivo - o mesmo criterio do saldo
+                # digitado neste passo: o [11] LIMPA a tabela antes de
+                # importar o CSV e nenhum passo a frente conta extratos de
+                # forma absoluta, entao ela nao afeta nada (o delete na grade
+                # com registro pendente foi o que derrubava o form antes).
+            }
+            # Devolve o estado original da tela (navigator escondido).
+            [void][UiTest]::PostMessage($toggleCri, 0x00F5, [IntPtr]::Zero,
+                [IntPtr]::Zero)                                  # BM_CLICK
+            Start-Sleep -Milliseconds 300
+        }
 
         # ---- tbSaldos: o cbAccount continua visivel la e filtra a grade.
         $idSal10 = [UiTest]::MenuId($mainCb, 'Gerenciar Saldos')

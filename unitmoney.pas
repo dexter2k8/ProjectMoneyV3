@@ -213,6 +213,14 @@ type
     // Registro novo da tbSaldos recebe a conta escolhida no cbAccount (a
     // coluna account_id está oculta na grade - é ela que filtra).
     procedure SQLQuerySaldosNewRecord(DataSet: TDataSet);
+    // Registro novo da grade de extratos: as duas colunas NOT NULL que não
+    // aparecem na grade (account_id vem do cbAccount, que filtra a tela -
+    // mesmo caso da tbSaldos; trntype nasce 'OTHER', o mesmo padrão do
+    // leitor de OFX/OFC quando o arquivo não traz o tipo). Sem isto o INSERT
+    // que o sqldb monta nomeia todas as colunas do SELECT * e manda NULL nas
+    // duas, que o SQLite recusa - não dava para criar transação nenhuma na
+    // mão.
+    procedure SQLQueryExtratosNewRecord(DataSet: TDataSet);
     procedure toggleShowControlsClick(Sender: TObject);
   private
     // Estado das guias antes de navegar para uma tela de gestão (para o
@@ -1119,7 +1127,20 @@ begin
   // o FROM muda o estado, e o SUM/OVER/ORDER de dentro dos parênteses são
   // pulados inteiros como um fraseado só (é por isso que a edição do trnamt
   // continua gravando).
-  sql := 'SELECT id, account_id, trntype, dtposted,' +
+  // O MESMO CAST com outro motivo no "dtposted": a coluna é TEXT e o driver
+  // SQLite a tipa como ftMemo, que a TDBGrid trata como BLOB - e a grade só
+  // entrega a tecla ao editor de bloco com dgDisplayMemoText (sem a opção,
+  // EditorCanAcceptKey zera a tecla: o editor da coluna Data abria e nada
+  // entrava nele). O CAST AS VARCHAR faz o campo nascer TStringField (o
+  // mesmo truque do enddate dos saldos), a tecla volta a entrar, e o AS
+  // mantém o NOME - o desenho continua passando pelo OnGetText, que formata
+  // DD/MM/AAAA, e a edição continua valendo para o arquivo. O tamanho que o
+  // driver dá ao VARCHAR sem precisão (255) folga para as datas.
+  // memo e chknum ficam TEXT de propósito: sem a opção da grade também não
+  // aceitariam tecla, mas CAST a ftString os limitaria a 255 caracteres
+  // (o driver trunca na leitura) - com dgDisplayMemoText na grade eles
+  // editam pelo texto cru e mantêm o tamanho livre do texto.
+  sql := 'SELECT id, account_id, trntype, CAST(dtposted AS VARCHAR) AS dtposted,' +
     ' CAST(trnamt AS REAL) AS trnamt, memo, chknum,' +
     ' CAST(' + SqlNumero(FSaldoAnterior) +
     ' + SUM(CAST(trnamt AS REAL)) OVER (ORDER BY dtposted, id) AS REAL)' +
@@ -1457,6 +1478,24 @@ begin
   idConta := IdContaSelecionada;
   if idConta >= 0 then
     DataSet.FieldByName('account_id').AsInteger := idConta;
+end;
+
+// Registro novo da grade de extratos: as duas colunas NOT NULL que a grade
+// não mostra. account_id é a conta escolhida no cbAccount - é ela que filtra
+// a tela, então é ela que o registro novo tem de pertencer (mesmo caso da
+// tbSaldos, cujo handler faz o mesmo); sem conta selecionada o campo fica
+// vazio e a gravação recusa. trntype não aparece em lugar nenhum da
+// interface e nasce 'OTHER', o mesmo padrão dos leitores de OFX/OFC quando
+// o arquivo não informa o tipo. As demais colunas NOT NULL (dtposted,
+// trnamt) estão na grade e o usuário digita; as nulas ficam vazias.
+procedure TFormMoney.SQLQueryExtratosNewRecord(DataSet: TDataSet);
+var
+  idConta: Integer;
+begin
+  idConta := IdContaSelecionada;
+  if idConta >= 0 then
+    DataSet.FieldByName('account_id').AsInteger := idConta;
+  DataSet.FieldByName('trntype').AsString := 'OTHER';
 end;
 
 // Preenche o combo da coluna "Banco" com os nomes atuais de tbBancos. O

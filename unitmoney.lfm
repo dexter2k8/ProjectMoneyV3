@@ -508,6 +508,7 @@ object FormMoney: TFormMoney
         FieldName = 'saldo'
       end>
     DataSource = DataSourceExtratos
+    Options = [dgEditing, dgTitles, dgIndicator, dgColumnResize, dgColumnMove, dgColLines, dgRowLines, dgTabs, dgAlwaysShowSelection, dgConfirmDelete, dgCancelOnExit, dgDisplayMemoText]
     TabOrder = 5
     Visible = False
     OnPrepareCanvas = gridTransPrepareCanvas
@@ -714,6 +715,7 @@ object FormMoney: TFormMoney
   object SQLQueryExtratos: TSQLQuery
     PacketRecords = -1
     FieldDefs = <>
+    OnNewRecord = SQLQueryExtratosNewRecord
     Database = SQLite3ConnContas
     Transaction = SQLTransactionContas
     SQL.Strings = (
