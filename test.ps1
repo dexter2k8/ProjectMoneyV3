@@ -1740,6 +1740,38 @@ try {
         ($blocoFiltroS -ne '') -and
         $blocoFiltroS.Contains('PrepararCamposSaldos')) (
         'PrepararCamposSaldos ausente, incompleto ou sem chamada em AplicarFiltroSaldos')
+    # dtposted leva a MESMA mascara de data da tbSaldos, religada em
+    # PrepararCamposExtratos - e os DOIS handlers, que e' o que faz a coluna
+    # Data abrir o editor em DD/MM/AAAA (a mascara so' encaixa nesse formato)
+    # e gravar AAAA-MM-DD, o formato que os filtros e as guias leem por
+    # posicao. Os blocos sao lidos do .pas inteiros, como nos saldos.
+    $blocoGetD = ''
+    if ($pasTexto -match
+        '(?s)procedure\s+TFormMoney\.ExtratoDtpostedGetText.*?\nend;') {
+        $blocoGetD = $Matches[0]
+    }
+    $blocoSetD = ''
+    if ($pasTexto -match
+        '(?s)procedure\s+TFormMoney\.ExtratoDtpostedSetText.*?\nend;') {
+        $blocoSetD = $Matches[0]
+    }
+    Check 'dtposted da grade de extratos exibido como DD/MM/AAAA (.pas)' (
+        ($blocoGetD -ne '') -and
+        ($blocoGetD -match 'DataExibicao\(Sender\.AsString\)') -and
+        ($blocoDataExib.Contains(
+            "Copy(Result, 9, 2) + '/' + Copy(Result, 6, 2)"))) (
+        'ExtratoDtpostedGetText ausente ou sem a conversao AAAA-MM-DD -> DD/MM/AAAA')
+    Check 'dtposted da grade de extratos gravado como AAAA-MM-DD (.pas)' (
+        ($blocoSetD -ne '') -and
+        ($blocoSetD -match 'DataISO\(AText, iso\)') -and
+        ($blocoDataISO.Contains("FormatDateTime('yyyy-mm-dd'"))) (
+        'ExtratoDtpostedSetText ausente ou sem a conversao DD/MM/AAAA -> AAAA-MM-DD')
+    Check 'mascara de data de dtposted religada a cada Open (.pas)' (
+        ($pasTexto -match
+            "FieldByName\('dtposted'\)\.OnSetText\s*:=\s*@ExtratoDtpostedSetText") -and
+        ($pasTexto -match
+            "FieldByName\('dtposted'\)\.EditMask\s*:=\s*'!99/00/0000;1;_'")) (
+        'PrepararCamposExtratos nao religa OnSetText e EditMask de dtposted')
     # A lista de anos do cbYear vem de saldos.enddate (e nao de
     # extratos.dtposted): e' o que CarregarFiltrosExtratos consulta. O
     # negativo pega um "volta para extratos" sem trocar o SELECT inteiro.
@@ -2743,9 +2775,11 @@ try {
             # CAST que faz o campo nascer ftString) o editor abria e nada
             # entrava nele, que e' o sintoma de "o teclado nao funciona" na
             # tela de extratos. F2 abre o editor da celula, EM_SETSEL marca
-            # tudo e o WM_CHAR tem de substituir o texto; ESC devolve a
-            # celula como estava (o arquivo so' e' tocado na edicao do Valor,
-            # logo abaixo).
+            # tudo e os WM_CHAR vao direto no EDITOR (o mesmo caminho do
+            # passo [10]): a coluna tem a MESMA mascara de data do enddate da
+            # tbSaldos, entao os 8 digitos tem de virar 15/06/2026 - com as
+            # barras que a mascara insere sozinhas. ESC devolve a celula como
+            # estava (o arquivo so' e' tocado na edicao do Valor, logo abaixo).
             if ($gradeTr8 -ne [IntPtr]::Zero) {
                 $antesData = @([UiTest]::Visible($gradeTr8))
                 [void][UiTest]::Msg($gradeTr8, 0x0100, [IntPtr]0x24, [IntPtr]::Zero)
@@ -2766,18 +2800,18 @@ try {
                 if ($editorData -ne [IntPtr]::Zero) {
                     [void][UiTest]::Msg($editorData, 0x00B1, [IntPtr]::Zero,
                         [IntPtr]-1)                                   # EM_SETSEL
-                    [void][UiTest]::Msg($editorData, 0x0100, [IntPtr]0x37,
-                        [IntPtr]::Zero)
-                    [void][UiTest]::Msg($editorData, 0x0102, [IntPtr]0x37,
-                        [IntPtr]::Zero)
-                    [void][UiTest]::Msg($editorData, 0x0101, [IntPtr]0x37,
-                        [IntPtr]::Zero)
+                    foreach ($chDig in '15062026'.ToCharArray()) {
+                        [void][UiTest]::Msg($editorData, 0x0102,
+                            [IntPtr][Convert]::ToInt32($chDig),
+                            [IntPtr]::Zero)                           # WM_CHAR
+                    }
                     Start-Sleep -Milliseconds 250
                     $txtData = [UiTest]::GetText($editorData)
                 }
-                Write-Host ('  dtposted: digitado="' + $txtData + '"')
-                Check 'tecla digitada na coluna Data entra no editor (passo [8])' (
-                    $txtData -eq '7') ('texto="' + $txtData + '"')
+                Write-Host ('  dtposted: digitado="15062026" editor="' +
+                    $txtData + '"')
+                Check 'tecla digitada na coluna Data vira data mascarada (passo [8])' (
+                    $txtData -eq '15/06/2026') ('texto="' + $txtData + '"')
                 [void][UiTest]::Msg($gradeTr8, 0x0100, [IntPtr]0x1B, [IntPtr]::Zero)
                 [void][UiTest]::Msg($gradeTr8, 0x0101, [IntPtr]0x1B, [IntPtr]::Zero)
                 Start-Sleep -Milliseconds 150
@@ -3666,12 +3700,14 @@ try {
                 [void][UiTest]::ClickOn($navCriHwnd,
                     [int][Math]::Floor($navCriW * 9 / 20), 12)   # nbInsert
                 Start-Sleep -Milliseconds 500
-                # Coluna 0 = Data (HOME + F2), digita a data; 3 direitas ate'
-                # o Valor (Data, Descricao, Documento, Valor) e digita o valor
-                # com o separador decimal do WINDOWS - o '.' o editor recusa.
+                # Coluna 0 = Data (HOME + F2): a coluna tem mascara, entao os
+                # 8 digitos digitados viram 15/06/2026 sozinhos; 3 direitas
+                # ate' o Valor (Data, Descricao, Documento, Valor) e digita o
+                # valor com o separador decimal do WINDOWS - o '.' o editor
+                # recusa.
                 [void][UiTest]::Msg($gradeCri, 0x0100, [IntPtr]0x24, [IntPtr]::Zero)
                 [void][UiTest]::Msg($gradeCri, 0x0101, [IntPtr]0x24, [IntPtr]::Zero)
-                $txtData10 = Invoke-EditorType $gradeCri '2026-06-15'
+                $txtData10 = Invoke-EditorType $gradeCri '15062026'
                 for ($rCri = 0; $rCri -lt 3; $rCri++) {
                     [void][UiTest]::Msg($gradeCri, 0x0100, [IntPtr]0x27,
                         [IntPtr]::Zero)                          # VK_RIGHT
@@ -3717,11 +3753,25 @@ try {
                     $linhasAntes10 + ' -> ' + $linhasCri10 +
                     ' viva=' + $vivaCri)
                 Check 'registro novo criado na grade (uma linha a mais) (passo [10])' (
-                    ($txtData10 -eq '2026-06-15') -and
+                    ($txtData10 -eq '15/06/2026') -and
                     ($txtValor10 -eq $valorCri) -and
                     ($linhasCri10 -eq ($linhasAntes10 + 1))) (
                     'data="' + $txtData10 + '" valor="' + $txtValor10 +
                     '" linhas ' + $linhasAntes10 + ' -> ' + $linhasCri10)
+                # O que a mascara produziu no editor tem de virar ISO no
+                # arquivo (e' o OnSetText que converte): dtposted e' lido por
+                # POSICAO pelos filtros e pelas guias, entao AAAA-MM-DD e' o
+                # unico formato que a linha pode gravar. A leitura tem retry,
+                # como as demais do arquivo (o Post e' assincrono).
+                $gravouData10 = 0
+                for ($t = 0; ($t -lt 8) -and ($gravouData10 -ne 1); $t++) {
+                    Start-Sleep -Milliseconds 250
+                    $gravouData10 = [Sq]::Consultar($minewDb,
+                        "SELECT COUNT(*) FROM extratos WHERE dtposted = " +
+                        "'2026-06-15' AND trnamt = -1.25;")
+                }
+                Check 'data digitada na grade gravada como AAAA-MM-DD (passo [10])' (
+                    $gravouData10 -eq 1) ('qtd=' + $gravouData10)
                 # A linha nova fica no arquivo - o mesmo criterio do saldo
                 # digitado neste passo: o [11] LIMPA a tabela antes de
                 # importar o CSV e nenhum passo a frente conta extratos de

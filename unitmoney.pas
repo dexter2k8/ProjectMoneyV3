@@ -132,8 +132,13 @@ type
     // Formatação da grade de extratos: os campos TEXT do SQLite viram ftMemo,
     // então a exibição passa pelo DisplayText, que é onde o OnGetText entra.
     // (Sem isso a data aparece como 20250305 e o valor sem C/D.)
+    // dtposted tem máscara de data (mesmo caso do enddate da tbSaldos): o
+    // texto COM as barras que a máscara entrega no editor (DD/MM/AAAA) tem
+    // de voltar ISO (AAAA-MM-DD) para o arquivo - os filtros e as guias leem
+    // a coluna por posição.
     procedure ExtratoDtpostedGetText(Sender: TField; var AText: string;
       DisplayText: Boolean);
+    procedure ExtratoDtpostedSetText(Sender: TField; const AText: string);
     procedure ExtratoTextoGetText(Sender: TField; var AText: string;
       DisplayText: Boolean);
     procedure ExtratoTrnAmtGetText(Sender: TField; var AText: string;
@@ -1323,18 +1328,37 @@ begin
 end;
 
 // dtposted é texto: o importador grava AAAAMMDD (o formato ISO AAAA-MM-DD
-// do arquivo passa direto). A grade mostra DD/MM/AAAA nos dois casos; com
-// DisplayText=False volta o valor cru, que é o que o editor da grade usa
-// para editar sem transformar a data em lixo.
+// do arquivo passa direto). A coluna tem máscara de data (mesmo caso do
+// enddate da tbSaldos), e a máscara exige o texto JÁ no formato DD/MM/AAAA
+// também no editor (DisplayText=False) - com o valor cru a edição começaria
+// fora das posições da máscara e a data viraria lixo. O que fica gravado não
+// muda: é o OnSetText que converte de volta.
 procedure TFormMoney.ExtratoDtpostedGetText(Sender: TField; var AText: string;
   DisplayText: Boolean);
 begin
   // A tradução dos DOIS formatos de dtposted (ISO e o AAAAMMDD do OFX) mora
   // em DataExibicao, junto com a do enddate dos saldos.
-  if DisplayText then
-    AText := DataExibicao(Sender.AsString)
-  else
-    AText := Sender.AsString;
+  AText := DataExibicao(Sender.AsString);
+end;
+
+// Aceita o que a máscara produz (DD/MM/AAAA) e também o formato gravado
+// (AAAA-MM-DD, para colar de fora). Dia/mês fora do lugar não é data: o
+// valor fica como estava, sem inventar conversão.
+procedure TFormMoney.ExtratoDtpostedSetText(Sender: TField; const AText: string);
+var
+  iso: string;
+begin
+  if Trim(AText) = '' then
+  begin
+    // dtposted é NOT NULL: vazio vira texto vazio, que o SQLite aceita.
+    Sender.AsString := '';
+    Exit;
+  end;
+  // DataISO aceita o que a máscara entrega (DD/MM/AAAA) e também o formato
+  // gravado (AAAA-MM-DD), validando a data de verdade (31/02 não passa).
+  // False = não é data: o valor fica como estava, sem inventar conversão.
+  if DataISO(AText, iso) then
+    Sender.AsString := iso;
 end;
 
 // memo e chknum são TEXT, que o SQLite entrega como ftMemo: a grade sem
@@ -1624,7 +1648,9 @@ begin
     gridTrans.Canvas.Font.Color := clRed;
 end;
 
-// Liga os handlers de exibição da grade de extratos. O saldo vem daqui:
+// Liga os handlers de exibição da grade de extratos - e a máscara de data da
+// coluna Data (mesmo caso do enddate da tbSaldos; religada a cada Open porque
+// os campos são dinâmicos e cada abertura os recria). O saldo vem daqui:
 // a coluna saldo nasce da expressão da query, com os ProviderFlags padrão do
 // TField ([pfInUpdate, pfInWhere]) - e com eles o sqldb geraria um
 // UPDATE ... "saldo"=:"saldo", que o SQLite recusaria ("no such column") a
@@ -1636,6 +1662,9 @@ procedure TFormMoney.PrepararCamposExtratos;
 begin
   SQLQueryExtratos.FieldByName('dtposted').OnGetText :=
     @ExtratoDtpostedGetText;
+  SQLQueryExtratos.FieldByName('dtposted').OnSetText :=
+    @ExtratoDtpostedSetText;
+  SQLQueryExtratos.FieldByName('dtposted').EditMask := '!99/00/0000;1;_';
   SQLQueryExtratos.FieldByName('memo').OnGetText := @ExtratoTextoGetText;
   SQLQueryExtratos.FieldByName('chknum').OnGetText := @ExtratoTextoGetText;
   SQLQueryExtratos.FieldByName('trnamt').OnGetText := @ExtratoTrnAmtGetText;
